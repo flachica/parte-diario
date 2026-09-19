@@ -1,0 +1,16 @@
+[project]
+name = "parte-diario"
+version = "0.1.0"
+description = "CLI para gestionar el diario profesional (parte de horas) de Fernando"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+parte = "parte_diario.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
