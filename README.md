@@ -30,6 +30,25 @@ pipx install --editable .
 
 Esto deja disponible el comando `parte` en cualquier ruta.
 
+## Autocompletado con tabulador (Bash / Zsh)
+
+Para que al pulsar `<TAB>` la terminal sugiera automáticamente los subcomandos (`start`, `stop`, `status`, `show`, etc.) y sus opciones:
+
+```bash
+parte completion --install
+```
+
+Detecta automáticamente tu shell actual (`bash` o `zsh` / Oh My Zsh) y configura el script en su ruta estándar:
+- En **Zsh** (Oh My Zsh): `~/.oh-my-zsh/custom/completions/_parte`
+- En **Bash**: `~/.local/share/bash-completion/completions/parte`
+
+A partir de ese momento, para usar el autocompletado en tu día a día **solo tienes que pulsar `<TAB>`** (no hace falta escribir `parte completion` para nada más):
+- `parte <TAB>` muestra todos los subcomandos disponibles.
+- `parte s<TAB>` sugiere directamente `start`, `stop`, `status`, `show`.
+- `parte config <TAB>` sugiere `show` y `set-vault`.
+- Dentro del modo interactivo (`parte`), pulsar `<TAB>` también muestra de inmediato las sugerencias sin necesidad de doble tabulador ni pitidos.
+
+
 ## Configuración del vault
 
 La primera vez, indica dónde están tus ficheros diarios:
@@ -42,6 +61,17 @@ parte config show
 Queda guardado en `~/.config/parte-diario/config.json`, así no hace falta repetirlo en cada comando. También se puede forzar puntualmente con la variable de entorno `DIARIO_VAULT` (tiene prioridad sobre el fichero de configuración). Si no se configura nada, se usa por defecto `~/Diario Profesional`.
 
 ## Uso
+
+### Modo interactivo
+
+Ejecutar `parte` sin argumentos abre una sesión interactiva completa con menú de acciones, selección de tareas del día, autocompletado y atajos directos:
+
+```bash
+parte                                                   # Abre el modo interactivo
+parte -i                                                # Equivalente
+```
+
+### Comandos directos
 
 ```bash
 parte start "Biomag"                                   # inicia un trabajo sin URL

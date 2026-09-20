@@ -84,6 +84,25 @@ def find_block_by_name(lines: List[str], name: str) -> Optional[Block]:
     return matches[-1] if matches else None
 
 
+def get_blocks_info(lines: List[str]) -> List[tuple[str, Optional[str]]]:
+    """Devuelve una lista de tuplas (nombre, url) de las tareas encontradas en el fichero,
+    ignorando notas sueltas y evitando duplicados."""
+    res: List[tuple[str, Optional[str]]] = []
+    seen = set()
+    for b in find_blocks(lines):
+        name = b.name.strip()
+        if not name or name.startswith(("*", "-", "+")):
+            continue
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        match = HEADER_LINK_RE.match(b.header)
+        url = match.group("url").strip() if match else None
+        res.append((name, url))
+    return res
+
+
+
 def make_header(name: str, url: Optional[str]) -> str:
     if url:
         return f"[{name}]({url})"
