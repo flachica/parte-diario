@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +12,7 @@ from typing import List, Optional, Tuple
 
 from . import diary, state
 from .cli import (
+    _close_current,
     _today_file,
     dispatch_command,
     do_config_set_vault,
@@ -23,7 +26,10 @@ from .cli import (
     get_vault_path,
 )
 
-HIST_FILE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "parte-diario" / "history"
+
+def _get_hist_file() -> Path:
+    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "parte-diario" / "history"
+
 
 try:
     import readline
@@ -40,6 +46,8 @@ COMMANDS = [
     "interrupt",
     "log",
     "show",
+    "edit",
+    "editar",
     "config",
     "completion",
     "help",
@@ -100,8 +108,8 @@ class InteractiveCompleter:
             first_cmd = parts[0].lower()
             if first_cmd == "config":
                 matches = [c for c in ["show", "set-vault"] if c.lower().startswith(text.lower())]
-            elif first_cmd == "show":
-                matches = [opt for opt in ["--fecha"] if opt.lower().startswith(text.lower())]
+            elif first_cmd in ("show", "edit", "editar"):
+                matches = [opt for opt in ["--fecha", "--editor"] if opt.lower().startswith(text.lower())]
             elif first_cmd == "note":
                 matches = [opt for opt in ["--loose", "--suelta"] if opt.lower().startswith(text.lower())]
             elif first_cmd in ("start", "interrupt"):
@@ -197,8 +205,9 @@ def print_banner() -> None:
     print("-" * width)
     print(f" {bold('[1]')} Iniciar / reanudar tarea       {bold('[5]')} Anotar minutos sueltos (log)")
     print(f" {bold('[2]')} Parar tarea abierta (stop)     {bold('[6]')} Ver diario de hoy / fecha")
-    print(f" {bold('[3]')} Añadir nota (note)             {bold('[7]')} Ver estado detallado")
-    print(f" {bold('[4]')} Registrar interrupción         {bold('[8]')} Configurar vault")
+    print(f" {bold('[3]')} Añadir nota (note)             {bold('[7]')} Ver tarea abierta")
+    print(f" {bold('[4]')} Registrar interrupción         {bold('[8]')} Editar entradas (edit)")
+    print(f"                                    {bold('[9]')} Configurar vault")
     print()
     print(f" {bold('[0]')} Salir (q / exit)               {bold('[?]')} Ayuda / Mostrar menú")
     print("=" * width)
@@ -207,7 +216,7 @@ def print_banner() -> None:
 def print_status_bar() -> None:
     print("-" * 70)
     print(f" Estado: {format_status_line()}")
-    print(dim(" Opciones: [1] Iniciar  [2] Parar  [3] Nota  [4] Interrumpir  [5] Minutos  [6] Ver  [7] Estado  [8] Config  [0] Salir"))
+    print(dim(" Opciones: [1] Iniciar  [2] Parar  [3] Nota  [4] Interrumpir  [5] Minutos  [6] Ver  [7] Tarea  [8] Editar  [9] Config  [0] Salir"))
 
 
 def get_today_tasks() -> List[Tuple[str, Optional[str]]]:
@@ -218,9 +227,9 @@ def get_today_tasks() -> List[Tuple[str, Optional[str]]]:
 
 
 def interactive_start() -> None:
-    open_task = state.load()
-    if open_task:
-        print(yellow(f"Aviso: La tarea '{open_task.name}' está abierta. Se cerrará automáticamente."))
+    vault = get_vault_path()
+    today_file = _today_file(vault)
+    lines = diary.read_lines(today_file) if today_file.exists() else []
 
     tasks_info = get_today_tasks()
     task_names = [name for name, _ in tasks_info]
@@ -272,7 +281,35 @@ def interactive_start() -> None:
         print("\nOperación cancelada.")
         return
 
-    do_start(selected_name, final_url)
+    # Opción de hora de inicio: hora del sistema (por defecto) o la más alta registrada
+    now_str = datetime.now().strftime("%H:%M")
+    highest_time = diary.find_highest_time_in_lines(lines)
+
+    chosen_start = now_str
+    if highest_time and highest_time != now_str:
+        print(f"\nHora de inicio:")
+        print(f"  {bold('[1]')} Hora del sistema: {now_str} {dim('(por defecto)')}")
+        print(f"  {bold('[2]')} Hora más alta registrada: {highest_time}")
+        try:
+            time_choice = input(f"Opción [Enter=1 ({now_str}), 2={highest_time}, o escribe HH:MM]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nOperación cancelada.")
+            return
+
+        if time_choice.lower() in ("c", "cancel", "cancelar"):
+            print("Operación cancelada.")
+            return
+        elif time_choice in ("2", "u", "ultima", "última", "alta"):
+            chosen_start = highest_time
+        elif time_choice in ("", "1", "s", "sistema"):
+            chosen_start = now_str
+        elif _is_valid_time(time_choice):
+            chosen_start = time_choice
+        else:
+            print(yellow(f"Opción o formato no válido ('{time_choice}'). Se usará la hora del sistema ({now_str})."))
+            chosen_start = now_str
+
+    do_start(selected_name, final_url, start_time=chosen_start)
 
 
 def interactive_stop() -> None:
@@ -448,6 +485,379 @@ def interactive_show() -> None:
     print(bold("-" * len(header)) + "\n")
 
 
+def _is_valid_time(s: str) -> bool:
+    m = re.match(r"^(\d{1,2}):(\d{2})$", s.strip())
+    if not m:
+        return False
+    h, m_val = int(m.group(1)), int(m.group(2))
+    return 0 <= h < 24 and 0 <= m_val < 60
+
+
+def _open_in_editor(path: Path) -> None:
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if not editor:
+        for cand in ("nano", "vim", "vi"):
+            if shutil.which(cand):
+                editor = cand
+                break
+    if not editor:
+        print(yellow("No se encontró ningún editor de texto en el sistema ($EDITOR, nano, vi)."))
+        return
+
+    try:
+        import subprocess
+        subprocess.run(f"{editor} {shlex.quote(str(path))}", shell=True, check=True)
+    except Exception as e:
+        print(yellow(f"Error al abrir el editor: {e}"))
+
+
+def _refresh_state_from_file(path: Path) -> None:
+    lines = diary.read_lines(path)
+    open_info = diary.find_open_task_in_lines(lines)
+    if open_info is not None:
+        task_name, start_time = open_info
+        block = diary.find_block_by_name(lines, task_name)
+        url = block.url if block else None
+        state.save(
+            state.OpenTask(
+                name=task_name,
+                url=url,
+                file=str(path),
+                date=datetime.now().strftime("%Y-%m-%d"),
+                start_time=start_time,
+            )
+        )
+    else:
+        state.clear()
+
+
+def _interactive_edit_block(path: Path, target_block_idx: int, is_today: bool) -> None:
+    lines = diary.read_lines(path)
+    blocks = diary.find_blocks(lines)
+    if not (0 <= target_block_idx < len(blocks)):
+        return
+    curr_block = blocks[target_block_idx]
+
+    header = f"--- Editando: {curr_block.name} ---"
+    print("\n" + bold(header))
+    print(dim("(Enter mantiene el valor actual, 'c' o 'fin' guarda y sale, 'cancelar' descarta)\n"))
+
+    new_name = curr_block.name
+    new_url = curr_block.url
+    body_lines = curr_block.lines[1:]
+    new_body_lines: List[str] = []
+
+    def _apply_changes() -> None:
+        new_header = diary.make_header(new_name, new_url)
+        has_changes = (
+            new_header != curr_block.header
+            or new_body_lines != body_lines
+        )
+        if not has_changes:
+            print("\nSin cambios en la entrada.")
+            return
+
+        updated_block = [new_header] + new_body_lines
+        new_lines = list(lines[:curr_block.start]) + updated_block + list(lines[curr_block.end:])
+        diary.write_lines(path, new_lines)
+        print(green(f"\n✓ Entrada '{new_name}' actualizada."))
+        if is_today:
+            _refresh_state_from_file(path)
+
+    # 1. Nombre / Texto principal de la tarea
+    is_bullet = curr_block.header.strip().startswith(("*", "-", "+"))
+    label = "Texto" if is_bullet else "Nombre"
+    try:
+        ans_name = input(f"{label} [{curr_block.name}] (Enter mantiene, 'd' borra tarea, 'fin' guarda): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nOperación cancelada.")
+        return
+
+    if ans_name.lower() in ("cancelar", "cancel", "descartar", "abort"):
+        print("Edición cancelada.")
+        return
+
+    if ans_name.lower() in ("c", "fin", "ok", "listo", "guardar", "salir", "q"):
+        new_body_lines = list(body_lines)
+        _apply_changes()
+        return
+
+    if ans_name.lower() == "d":
+        try:
+            conf = input(f"¿Seguro que deseas eliminar por completo la tarea '{curr_block.name}'? [s/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nOperación cancelada.")
+            return
+        if conf in ("s", "si", "y", "yes"):
+            new_lines = diary.delete_block(lines, curr_block)
+            diary.write_lines(path, new_lines)
+            print(green(f"✓ Tarea '{curr_block.name}' eliminada."))
+            if is_today:
+                _refresh_state_from_file(path)
+        else:
+            print("Eliminación cancelada.")
+        return
+
+    if ans_name:
+        new_name = ans_name
+
+    # 2. URL
+    current_url_display = curr_block.url if curr_block.url else dim("(ninguna)")
+    try:
+        ans_url = input(f"URL [{current_url_display}] (Enter mantiene, '-' quita URL, 'fin' guarda): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nOperación cancelada.")
+        return
+
+    if ans_url.lower() in ("cancelar", "cancel", "descartar", "abort"):
+        print("Edición cancelada.")
+        return
+
+    if ans_url.lower() in ("c", "fin", "ok", "listo", "guardar", "salir", "q"):
+        new_body_lines = list(body_lines)
+        _apply_changes()
+        return
+
+    if ans_url == "-":
+        new_url = None
+    elif ans_url:
+        new_url = ans_url
+
+    # 3. Líneas de contenido existentes
+    finish_early = False
+
+    for l_idx, line in enumerate(body_lines, 1):
+        if finish_early:
+            new_body_lines.append(line)
+            continue
+
+        tr = diary.parse_time_range(line)
+        if tr:
+            old_start, old_end = tr
+            end_display = old_end if old_end else "abierta"
+            print(f"\n  Línea {l_idx} (rango horario: {line}):")
+
+            # Hora inicio
+            final_start = old_start
+            while True:
+                try:
+                    ans_start = input(f"    Hora inicio [{old_start}] (Enter mantiene, 'd' borra línea, 'fin' guarda): ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print("\nOperación cancelada.")
+                    return
+
+                if ans_start.lower() in ("cancelar", "cancel", "descartar", "abort"):
+                    print("Edición cancelada.")
+                    return
+                if ans_start.lower() in ("c", "fin", "ok", "listo", "guardar", "salir", "q"):
+                    new_body_lines.extend(body_lines[l_idx - 1:])
+                    finish_early = True
+                    break
+                if ans_start.lower() == "d":
+                    final_start = None
+                    break
+                if not ans_start:
+                    final_start = old_start
+                    break
+                if _is_valid_time(ans_start):
+                    final_start = ans_start
+                    break
+                print(yellow("    Formato inválido. Usa HH:MM (ej. 08:30)."))
+
+            if finish_early:
+                break
+
+            if final_start is None:
+                print(dim(f"    (Línea {l_idx} eliminada)"))
+                continue
+
+            # Hora fin
+            final_end = old_end
+            while True:
+                try:
+                    ans_end = input(f"    Hora fin [{end_display}] (Enter mantiene, '-' abierta, 'd' borra línea, 'fin' guarda): ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print("\nOperación cancelada.")
+                    return
+
+                if ans_end.lower() in ("cancelar", "cancel", "descartar", "abort"):
+                    print("Edición cancelada.")
+                    return
+                if ans_end.lower() in ("c", "fin", "ok", "listo", "guardar", "salir", "q"):
+                    new_body_lines.append(diary.format_time_range(final_start, old_end))
+                    new_body_lines.extend(body_lines[l_idx:])
+                    finish_early = True
+                    break
+                if ans_end.lower() == "d":
+                    final_end = "DELETE"
+                    break
+                if ans_end == "-":
+                    final_end = None
+                    break
+                if not ans_end:
+                    final_end = old_end
+                    break
+                if _is_valid_time(ans_end):
+                    final_end = ans_end
+                    break
+                print(yellow("    Formato inválido. Usa HH:MM (ej. 17:00) o '-' para abierta."))
+
+            if finish_early:
+                break
+
+            if final_end == "DELETE":
+                print(dim(f"    (Línea {l_idx} eliminada)"))
+                continue
+
+            new_body_lines.append(diary.format_time_range(final_start, final_end))
+        else:
+            print(f"\n  Línea {l_idx}:")
+            try:
+                ans_text = input(f"    Texto [{line}] (Enter mantiene, 'd' borra línea, 'fin' guarda): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\nOperación cancelada.")
+                return
+
+            if ans_text.lower() in ("cancelar", "cancel", "descartar", "abort"):
+                print("Edición cancelada.")
+                return
+            if ans_text.lower() in ("c", "fin", "ok", "listo", "guardar", "salir", "q"):
+                new_body_lines.extend(body_lines[l_idx - 1:])
+                finish_early = True
+                break
+            if ans_text.lower() == "d":
+                print(dim(f"    (Línea {l_idx} eliminada)"))
+                continue
+            if ans_text:
+                new_body_lines.append(ans_text)
+            else:
+                new_body_lines.append(line)
+
+    if finish_early:
+        _apply_changes()
+        return
+
+    # 4. Añadir nueva línea (opcional)
+    print()
+    try:
+        ans_add = input("¿Añadir nueva línea (tiempo, nota, ajuste)? (Enter omite/termina): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nOperación cancelada.")
+        return
+
+    if ans_add.lower() in ("cancelar", "cancel", "descartar", "abort"):
+        print("Edición cancelada.")
+        return
+    if ans_add and ans_add.lower() not in ("c", "fin", "ok", "listo", "guardar", "salir", "q"):
+        new_body_lines.append(ans_add)
+
+    # 5. Guardar cambios
+    _apply_changes()
+
+
+def interactive_edit(fecha_param: Optional[str] = None) -> None:
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if fecha_param:
+        fecha_str = fecha_param
+    else:
+        try:
+            prompt_date = input(f"Fecha a editar [YYYY-MM-DD] (Enter para hoy: {today_str}, c para cancelar): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nOperación cancelada.")
+            return
+        if prompt_date.lower() in ("c", "cancel", "cancelar"):
+            print("Operación cancelada.")
+            return
+        fecha_str = prompt_date if prompt_date else today_str
+
+    try:
+        when = datetime.strptime(fecha_str, "%Y-%m-%d")
+    except ValueError:
+        print(yellow("Formato de fecha no válido. Debe ser YYYY-MM-DD."))
+        return
+
+    vault = get_vault_path()
+    path = _today_file(vault, when)
+    if not path.exists():
+        print(yellow(f"\nNo existe el fichero para {fecha_str} ({path})."))
+        return
+
+    while True:
+        lines = diary.read_lines(path)
+        blocks = diary.find_blocks(lines)
+        if not blocks:
+            print(yellow(f"\nEl fichero de {fecha_str} está vacío."))
+            return
+
+        header = f"--- Entradas de {fecha_str} ({path.name}) ---"
+        print("\n" + bold(header))
+        for idx, b in enumerate(blocks, 1):
+            url_str = f" {dim('(' + b.url + ')')}" if b.url else ""
+            print(f"  {bold(f'[{idx}]')} {b.name}{url_str}")
+            for line in b.lines[1:]:
+                print(f"      {dim(line)}")
+        print()
+        print(f"  {bold('[e]')} Abrir fichero en editor de texto ($EDITOR)")
+        print(f"  {bold('[c]')} Volver al menú principal")
+        print(bold("-" * len(header)))
+
+        try:
+            choice = input("\nSelecciona el número de entrada a editar (o 'd <núm>' para borrar, 'c' volver): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nOperación cancelada.")
+            return
+
+        if not choice or choice.lower() in ("c", "cancel", "cancelar", "0", "volver", "q", "exit"):
+            return
+
+        if choice.lower() == "e":
+            _open_in_editor(path)
+            if fecha_str == today_str:
+                _refresh_state_from_file(path)
+            continue
+
+        lower_choice = choice.lower()
+        if (
+            lower_choice.startswith("d ")
+            or lower_choice.startswith("del ")
+            or lower_choice.startswith("borrar ")
+            or (lower_choice.startswith("d") and lower_choice[1:].strip().isdigit())
+        ):
+            parts = lower_choice.split()
+            del_str = parts[1] if len(parts) > 1 else lower_choice[1:].strip()
+            if del_str.isdigit():
+                del_idx = int(del_str) - 1
+                if 0 <= del_idx < len(blocks):
+                    del_block = blocks[del_idx]
+                    try:
+                        conf = input(f"¿Seguro que deseas eliminar por completo la tarea '{del_block.name}'? [s/N]: ").strip().lower()
+                    except (KeyboardInterrupt, EOFError):
+                        continue
+                    if conf in ("s", "si", "y", "yes"):
+                        new_lines = diary.delete_block(lines, del_block)
+                        diary.write_lines(path, new_lines)
+                        print(green(f"✓ Tarea '{del_block.name}' eliminada."))
+                        if fecha_str == today_str:
+                            _refresh_state_from_file(path)
+                    else:
+                        print("Eliminación cancelada.")
+                    continue
+                else:
+                    print(yellow("Número de entrada no válido."))
+                    continue
+
+        if not choice.isdigit():
+            print(yellow("Opción no válida. Introduce un número de entrada, 'd <núm>' o 'e'."))
+            continue
+
+        block_idx = int(choice) - 1
+        if not (0 <= block_idx < len(blocks)):
+            print(yellow("Número de entrada no válido."))
+            continue
+
+        _interactive_edit_block(path, block_idx, fecha_str == today_str)
+
+
 def interactive_config() -> None:
     vault = get_vault_path()
     print(f"Vault actual: {bold(str(vault))}")
@@ -475,10 +885,11 @@ def interactive_config() -> None:
 
 
 def run_interactive() -> None:
+    hist_file = _get_hist_file()
     if HAVE_READLINE:
-        if HIST_FILE.exists():
+        if hist_file.exists():
             try:
-                readline.read_history_file(str(HIST_FILE))
+                readline.read_history_file(str(hist_file))
             except Exception:
                 pass
         readline.set_history_length(1000)
@@ -529,9 +940,11 @@ def run_interactive() -> None:
                 interactive_log()
             elif line in ("6", "show"):
                 interactive_show()
-            elif line in ("7", "status"):
+            elif line in ("7", "status", "tarea"):
                 do_status()
-            elif line in ("8", "config"):
+            elif line in ("8", "edit", "editar"):
+                interactive_edit()
+            elif line in ("9", "config"):
                 interactive_config()
             else:
                 try:
@@ -540,15 +953,15 @@ def run_interactive() -> None:
                     print(yellow(f"Error al analizar el comando: {e}"))
                     continue
 
-                if parts[0].lower() in ("start", "stop", "status", "note", "interrupt", "log", "show", "config", "completion"):
+                if parts[0].lower() in ("start", "stop", "status", "note", "interrupt", "log", "show", "edit", "editar", "config", "completion"):
                     dispatch_command(parts)
                 else:
-                    print(yellow(f"Opción no reconocida: '{line}'. Escribe un número [1-8], un comando, o '?' para ver el menú."))
+                    print(yellow(f"Opción no reconocida: '{line}'. Escribe un número [1-9], un comando, o '?' para ver el menú."))
 
     finally:
         if HAVE_READLINE:
             try:
-                HIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-                readline.write_history_file(str(HIST_FILE))
+                hist_file.parent.mkdir(parents=True, exist_ok=True)
+                readline.write_history_file(str(hist_file))
             except Exception:
                 pass

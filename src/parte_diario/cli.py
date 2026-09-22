@@ -16,15 +16,37 @@ def _today_file(vault: Path, when: Optional[datetime] = None) -> Path:
     return vault / f"{when:%Y-%m-%d}.md"
 
 
-def _close_current(verbose: bool = True) -> Optional[dict]:
+def _close_current(end_time: Optional[str] = None, verbose: bool = True) -> Optional[dict]:
     """Cierra el trabajo actualmente abierto, si lo hay. No falla si no hay ninguno."""
     open_task = state.load()
+    vault = get_vault_path()
+    now = datetime.now()
+    close_time = end_time or f"{now:%H:%M}"
+
     if open_task is None:
+        today_file = _today_file(vault, now)
+        if today_file.exists():
+            lines = diary.read_lines(today_file)
+            open_info = diary.find_open_task_in_lines(lines)
+            if open_info is not None:
+                task_name, start_time = open_info
+                new_lines = diary.close_open_line(lines, start_time, prefer_block_name=task_name, end_time=close_time)
+                if new_lines is not None:
+                    diary.write_lines(today_file, new_lines)
+                    state.clear()
+                    if verbose:
+                        print(f"Cerrado: {task_name} ({start_time} - {close_time})")
+                    return {
+                        "name": task_name,
+                        "url": None,
+                        "start_time": start_time,
+                        "end_time": close_time,
+                    }
         return None
 
     task_file = Path(open_task.file)
     lines = diary.read_lines(task_file)
-    new_lines = diary.close_open_line(lines, open_task.start_time, prefer_block_name=open_task.name)
+    new_lines = diary.close_open_line(lines, open_task.start_time, prefer_block_name=open_task.name, end_time=close_time)
 
     if new_lines is None:
         print(
@@ -38,26 +60,43 @@ def _close_current(verbose: bool = True) -> Optional[dict]:
 
     diary.write_lines(task_file, new_lines)
     state.clear()
-    now = datetime.now()
     if verbose:
-        print(f"Cerrado: {open_task.name} ({open_task.start_time} - {now:%H:%M})")
+        print(f"Cerrado: {open_task.name} ({open_task.start_time} - {close_time})")
     return {
         "name": open_task.name,
         "url": open_task.url,
         "start_time": open_task.start_time,
-        "end_time": f"{now:%H:%M}",
+        "end_time": close_time,
     }
 
 
-def do_start(nombre: str, url: Optional[str] = None, verbose: bool = True) -> bool:
+def do_start(
+    nombre: str,
+    url: Optional[str] = None,
+    start_time: Optional[str] = None,
+    use_latest_time: bool = False,
+    verbose: bool = True,
+) -> bool:
     vault = get_vault_path()
     now = datetime.now()
-
-    _close_current(verbose=verbose)
+    now_str = f"{now:%H:%M}"
 
     today_file = _today_file(vault, now)
-    lines = diary.read_lines(today_file)
-    open_line = f"{now:%H:%M} - "
+    lines = diary.read_lines(today_file) if today_file.exists() else []
+
+    if use_latest_time:
+        highest = diary.find_highest_time_in_lines(lines)
+        chosen_start = highest or now_str
+    elif start_time:
+        chosen_start = start_time
+    else:
+        chosen_start = now_str
+
+    _close_current(end_time=chosen_start, verbose=verbose)
+
+    today_file = _today_file(vault, now)
+    lines = diary.read_lines(today_file) if today_file.exists() else []
+    open_line = f"{chosen_start} - "
     new_lines = diary.add_or_create_block_line(lines, nombre, url, open_line)
     diary.write_lines(today_file, new_lines)
 
@@ -75,13 +114,13 @@ def do_start(nombre: str, url: Optional[str] = None, verbose: bool = True) -> bo
             url=url,
             file=str(today_file),
             date=f"{now:%Y-%m-%d}",
-            start_time=f"{now:%H:%M}",
+            start_time=chosen_start,
         )
     )
 
     if verbose:
         destino = f" ({url})" if url else ""
-        print(f"Iniciado: {nombre}{destino} a las {now:%H:%M}")
+        print(f"Iniciado: {nombre}{destino} a las {chosen_start}")
     return True
 
 
@@ -97,6 +136,30 @@ def do_stop(verbose: bool = True) -> bool:
 
 def get_status_info() -> Optional[dict]:
     open_task = state.load()
+    if open_task is None:
+        vault = get_vault_path()
+        today_file = _today_file(vault)
+        if today_file.exists():
+            lines = diary.read_lines(today_file)
+            open_info = diary.find_open_task_in_lines(lines)
+            if open_info is not None:
+                task_name, start_time = open_info
+                block = diary.find_block_by_name(lines, task_name)
+                url = None
+                if block:
+                    m = diary.HEADER_LINK_RE.match(block.header)
+                    if m:
+                        url = m.group("url")
+                now = datetime.now()
+                open_task = state.OpenTask(
+                    name=task_name,
+                    url=url,
+                    file=str(today_file),
+                    date=f"{now:%Y-%m-%d}",
+                    start_time=start_time,
+                )
+                state.save(open_task)
+
     if open_task is None:
         return None
 
@@ -261,7 +324,12 @@ def do_config_set_vault(ruta: Path | str) -> Path:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
-    do_start(args.nombre, args.url)
+    do_start(
+        args.nombre,
+        url=args.url,
+        start_time=args.hora,
+        use_latest_time=args.latest,
+    )
 
 
 def cmd_stop(args: argparse.Namespace) -> None:
@@ -301,6 +369,22 @@ def cmd_show(args: argparse.Namespace) -> None:
     content = do_show(args.fecha)
     if content is None:
         raise SystemExit(1)
+
+
+def cmd_edit(args: argparse.Namespace) -> None:
+    from .interactive import _open_in_editor, _refresh_state_from_file, interactive_edit
+
+    if args.editor:
+        when = datetime.strptime(args.fecha, "%Y-%m-%d") if args.fecha else datetime.now()
+        path = _today_file(get_vault_path(), when)
+        if not path.exists():
+            print(f"No existe {path}", file=sys.stderr)
+            raise SystemExit(1)
+        _open_in_editor(path)
+        if not args.fecha or args.fecha == datetime.now().strftime("%Y-%m-%d"):
+            _refresh_state_from_file(path)
+    else:
+        interactive_edit(fecha_param=args.fecha)
 
 
 def cmd_completion(args: argparse.Namespace) -> None:
@@ -367,6 +451,12 @@ def build_parser(parser_cls: Type[argparse.ArgumentParser] = argparse.ArgumentPa
     p_start = sub.add_parser("start", help="Inicia un trabajo (cierra el que estuviera abierto)")
     p_start.add_argument("nombre", help="Nombre del trabajo")
     p_start.add_argument("--url", help="URL asociada al trabajo (opcional)", default=None)
+    p_start.add_argument("--hora", "--time", help="Hora de inicio manual (HH:MM)", default=None)
+    p_start.add_argument(
+        "--latest", "--ultima", "--desde-ultima",
+        action="store_true",
+        help="Inicia el tiempo desde la hora más alta registrada en lugar de la del sistema",
+    )
     p_start.set_defaults(func=cmd_start)
 
     p_stop = sub.add_parser("stop", help="Cierra el trabajo abierto sin iniciar otro")
@@ -383,6 +473,14 @@ def build_parser(parser_cls: Type[argparse.ArgumentParser] = argparse.ArgumentPa
     p_show = sub.add_parser("show", help="Muestra el contenido del diario de hoy (o de --fecha)")
     p_show.add_argument("--fecha", help="Fecha en formato YYYY-MM-DD", default=None)
     p_show.set_defaults(func=cmd_show)
+
+    p_edit = sub.add_parser(
+        "edit",
+        help="Edita entradas del diario (nombre, url, horas de inicio/fin, textos, notas)",
+    )
+    p_edit.add_argument("--fecha", help="Fecha en formato YYYY-MM-DD (por defecto: hoy)", default=None)
+    p_edit.add_argument("-e", "--editor", action="store_true", help="Abre directamente el fichero en el editor de texto ($EDITOR)")
+    p_edit.set_defaults(func=cmd_edit)
 
     p_log = sub.add_parser(
         "log",

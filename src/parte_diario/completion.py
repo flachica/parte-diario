@@ -18,7 +18,7 @@ _parte_completions() {
         cword=$COMP_CWORD
     fi
 
-    local commands="start stop status note show log interrupt config interactive completion"
+    local commands="start stop status note show edit log interrupt config interactive completion"
     local config_commands="show set-vault"
 
     if [[ $cword -eq 1 ]]; then
@@ -29,19 +29,19 @@ _parte_completions() {
     local cmd="${words[1]}"
     case "$cmd" in
         start)
-            if [[ "$prev" == "--url" ]]; then
+            if [[ "$prev" == "--url" || "$prev" == "--hora" || "$prev" == "--time" ]]; then
                 return 0
             fi
-            COMPREPLY=( $(compgen -W "--url" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--url --hora --time --latest --ultima" -- "$cur") )
             ;;
         stop|status|interactive)
             return 0
             ;;
-        show)
+        show|edit)
             if [[ "$prev" == "--fecha" ]]; then
                 return 0
             fi
-            COMPREPLY=( $(compgen -W "--fecha" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--fecha --editor" -- "$cur") )
             ;;
         note)
             COMPREPLY=( $(compgen -W "--loose --suelta" -- "$cur") )
@@ -88,6 +88,7 @@ _parte() {
         'status:Muestra el trabajo actualmente abierto'
         'note:Añade una nota al trabajo abierto o suelta'
         'show:Muestra el contenido del diario de hoy o de otra fecha'
+        'edit:Edita entradas del diario (url, horas de inicio/fin, textos)'
         'log:Anota una tarea usando solo minutos invertidos (+15 o -15)'
         'interrupt:Registra una interrupción en la tarea abierta'
         'config:Consulta o fija la ruta del vault'
@@ -110,13 +111,16 @@ _parte() {
                 start)
                     _arguments \\
                         '--url[URL asociada al trabajo]:url:' \\
+                        '(--hora --time)'{--hora,--time}'[Hora de inicio manual (HH:MM)]:hora:' \\
+                        '(--latest --ultima)'{--latest,--ultima}'[Inicia desde la hora más alta registrada]' \\
                         '*:nombre:'
                     ;;
                 stop|status|interactive)
                     ;;
-                show)
+                show|edit)
                     _arguments \\
-                        '--fecha[Fecha en formato YYYY-MM-DD]:fecha:'
+                        '--fecha[Fecha en formato YYYY-MM-DD]:fecha:' \\
+                        '(-e --editor)'{-e,--editor}'[Abre directamente en el editor de texto]'
                     ;;
                 note)
                     _arguments \\

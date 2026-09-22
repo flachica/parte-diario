@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import List, Optional
 
 HEADER_LINK_RE = re.compile(r"^\[(?P<name>.+?)\]\((?P<url>.+?)\)\s*$")
-OPEN_LINE_RE = re.compile(r"^(?P<start>\d{2}:\d{2}) - \s*$")
+OPEN_LINE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*$")
 
 
 @dataclass
@@ -44,6 +44,13 @@ class Block:
         if match:
             return match.group("name").strip()
         return self.header.strip()
+
+    @property
+    def url(self) -> Optional[str]:
+        match = HEADER_LINK_RE.match(self.header)
+        if match:
+            return match.group("url").strip()
+        return None
 
 
 def read_lines(path: Path) -> List[str]:
@@ -128,7 +135,12 @@ def append_line_to_block(lines: List[str], block: Block, new_line: str) -> List[
     return new_lines
 
 
-def close_open_line(lines: List[str], start_time: str, prefer_block_name: Optional[str] = None) -> Optional[List[str]]:
+def close_open_line(
+    lines: List[str],
+    start_time: str,
+    prefer_block_name: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> Optional[List[str]]:
     """Busca la línea abierta ``HH:MM - `` con la hora de inicio dada y la cierra.
 
     Si se indica ``prefer_block_name`` se busca primero dentro del bloque de
@@ -137,29 +149,50 @@ def close_open_line(lines: List[str], start_time: str, prefer_block_name: Option
     Devuelve las nuevas líneas, o ``None`` si no se encontró la línea abierta.
     """
     target = f"{start_time} - "
+    open_re = re.compile(rf"^{re.escape(start_time)}\s*-\s*$")
 
-    def _try_close(candidate_indices: range) -> Optional[int]:
+    def _try_close(candidate_indices: range) -> Optional[tuple[int, str]]:
+        # Primero busca coincidencia exacta o flexible con start_time
         for idx in candidate_indices:
-            if lines[idx] == target:
-                return idx
+            line_str = lines[idx].strip()
+            if lines[idx] == target or open_re.match(line_str):
+                return idx, start_time
+        # Si no hay coincidencia exacta con start_time pero hay una línea abierta genérica
+        for idx in candidate_indices:
+            m = OPEN_LINE_RE.match(lines[idx].strip())
+            if m:
+                return idx, m.group("start")
         return None
 
-    idx: Optional[int] = None
+    result: Optional[tuple[int, str]] = None
     if prefer_block_name:
         block = find_block_by_name(lines, prefer_block_name)
         if block is not None:
-            idx = _try_close(range(block.start, block.end))
+            result = _try_close(range(block.start, block.end))
 
-    if idx is None:
-        idx = _try_close(range(len(lines)))
+    if result is None:
+        result = _try_close(range(len(lines)))
 
-    if idx is None:
+    if result is None:
         return None
 
-    end_time = datetime.now().strftime("%H:%M")
+    idx, actual_start = result
+    actual_end = end_time or datetime.now().strftime("%H:%M")
     new_lines = list(lines)
-    new_lines[idx] = f"{start_time} - {end_time}"
+    new_lines[idx] = f"{actual_start} - {actual_end}"
     return new_lines
+
+
+def find_open_task_in_lines(lines: List[str]) -> Optional[tuple[str, str]]:
+    """Busca si hay alguna tarea con línea abierta en las líneas del fichero.
+    Devuelve (nombre_tarea, start_time) de la última tarea abierta encontrada, o None."""
+    blocks = find_blocks(lines)
+    for b in reversed(blocks):
+        for line in reversed(b.lines[1:]):  # Ignoramos la cabecera
+            m = OPEN_LINE_RE.match(line.strip())
+            if m:
+                return b.name, m.group("start")
+    return None
 
 
 def add_note_to_block(lines: List[str], name: str, note: str) -> Optional[List[str]]:
@@ -190,3 +223,88 @@ def append_free_block(lines: List[str], text_lines: List[str]) -> List[str]:
         new_lines.append("")
     new_lines.extend(text_lines)
     return new_lines
+
+
+CLOSED_LINE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})$")
+
+
+def parse_time_range(line: str) -> Optional[tuple[str, Optional[str]]]:
+    """Si la línea es un rango horario (abierto o cerrado), devuelve (inicio, fin_o_None)."""
+    s = line.strip()
+    m_closed = CLOSED_LINE_RE.match(s)
+    if m_closed:
+        return m_closed.group("start"), m_closed.group("end")
+    m_open = OPEN_LINE_RE.match(s)
+    if m_open:
+        return m_open.group("start"), None
+    return None
+
+
+def format_time_range(start: str, end: Optional[str]) -> str:
+    """Formatea un rango de tiempo 'HH:MM - HH:MM' o 'HH:MM - ' asegurando dos dígitos."""
+    s_parts = start.split(":")
+    start_fmt = f"{int(s_parts[0]):02d}:{int(s_parts[1]):02d}"
+    if end:
+        e_parts = end.split(":")
+        end_fmt = f"{int(e_parts[0]):02d}:{int(e_parts[1]):02d}"
+        return f"{start_fmt} - {end_fmt}"
+    return f"{start_fmt} - "
+
+
+def find_highest_time_in_lines(lines: List[str]) -> Optional[str]:
+    """Busca y devuelve la hora más alta registrada en los rangos horarios del fichero (formato HH:MM)."""
+    times: List[tuple[int, int, str]] = []
+    for line in lines:
+        tr = parse_time_range(line)
+        if tr:
+            start_str, end_str = tr
+            s_parts = start_str.split(":")
+            times.append((int(s_parts[0]), int(s_parts[1]), f"{int(s_parts[0]):02d}:{int(s_parts[1]):02d}"))
+            if end_str:
+                e_parts = end_str.split(":")
+                times.append((int(e_parts[0]), int(e_parts[1]), f"{int(e_parts[0]):02d}:{int(e_parts[1]):02d}"))
+
+    if not times:
+        return None
+
+    times.sort(key=lambda t: (t[0], t[1]))
+    return times[-1][2]
+
+
+def update_block_header(lines: List[str], block: Block, new_name: str, new_url: Optional[str]) -> List[str]:
+    """Actualiza la cabecera del bloque con el nuevo nombre y URL."""
+    new_header = make_header(new_name.strip(), new_url.strip() if new_url else None)
+    new_lines = list(lines)
+    new_lines[block.start] = new_header
+    return new_lines
+
+
+def update_block_line(lines: List[str], global_line_idx: int, new_content: str) -> List[str]:
+    """Actualiza una línea específica del fichero."""
+    new_lines = list(lines)
+    new_lines[global_line_idx] = new_content
+    return new_lines
+
+
+def delete_block_line(lines: List[str], global_line_idx: int) -> List[str]:
+    """Elimina una línea específica del fichero."""
+    new_lines = list(lines)
+    del new_lines[global_line_idx]
+    return new_lines
+
+
+def delete_block(lines: List[str], block: Block) -> List[str]:
+    """Elimina un bloque completo y normaliza las líneas en blanco circundantes."""
+    new_lines = list(lines[:block.start]) + list(lines[block.end:])
+    cleaned: List[str] = []
+    prev_blank = False
+    for line in new_lines:
+        if line.strip() == "":
+            if not prev_blank and cleaned:
+                cleaned.append("")
+                prev_blank = True
+        else:
+            cleaned.append(line)
+            prev_blank = False
+    return cleaned
+

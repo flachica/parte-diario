@@ -4,10 +4,11 @@ import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from parte_diario import cli, state
+from parte_diario import cli, diary, state
 from parte_diario.interactive import run_interactive
 
 
@@ -62,6 +63,186 @@ class TestCLI(unittest.TestCase):
         self.assertIn("Cerrado: Mi Tarea", f.getvalue())
 
         self.assertIsNone(state.load())
+
+    def test_start_closes_previous_task(self):
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["start", "Tarea 1"])
+            cli.main(["start", "Tarea 2"])
+        output = f.getvalue()
+        self.assertIn("Iniciado: Tarea 1", output)
+        self.assertIn("Cerrado: Tarea 1", output)
+        self.assertIn("Iniciado: Tarea 2", output)
+
+        open_task = state.load()
+        self.assertIsNotNone(open_task)
+        self.assertEqual(open_task.name, "Tarea 2")
+
+        # Verificar contenido en el fichero diario
+        today_file = cli._today_file(self.vault_dir)
+        lines = diary.read_lines(today_file)
+        self.assertIsNone(diary.find_open_task_in_lines(lines[:2]))  # Tarea 1 debe estar cerrada
+
+    def test_start_closes_task_when_state_missing_but_file_has_open_task(self):
+        cli.main(["start", "Tarea Huérfana"])
+        state.clear()
+        self.assertIsNone(state.load())
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["start", "Nueva Tarea"])
+        output = f.getvalue()
+        self.assertIn("Cerrado: Tarea Huérfana", output)
+        self.assertIn("Iniciado: Nueva Tarea", output)
+
+    def test_interactive_start_closes_previous_task_immediately(self):
+        from parte_diario import interactive
+        cli.main(["start", "Tarea Abierta"])
+
+        # Simulamos seleccionar '1' (Iniciar tarea), luego 'Tarea Siguiente', URL vacía '', y luego '0' (salir)
+        inputs = iter(["1", "Tarea Siguiente", "", "0"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.run_interactive()
+
+        out = f.getvalue()
+        self.assertIn("Cerrado: Tarea Abierta", out)
+        self.assertIn("Iniciado: Tarea Siguiente", out)
+
+    def test_start_with_hora_and_latest(self):
+        # Iniciar con hora manual
+        cli.main(["start", "Tarea Manual", "--hora", "08:15"])
+        task = state.load()
+        self.assertIsNotNone(task)
+        self.assertEqual(task.start_time, "08:15")
+
+        # Iniciar siguiente tarea desde la hora más alta registrada
+        cli.main(["start", "Tarea Siguiente", "--latest"])
+        task = state.load()
+        self.assertIsNotNone(task)
+        self.assertEqual(task.start_time, "08:15")
+
+    def test_interactive_start_choose_highest_time_vs_default(self):
+        from parte_diario import interactive
+        today_file = cli._today_file(self.vault_dir)
+        diary.write_lines(today_file, ["Tarea Pasada", "08:00 - 09:30"])
+
+        # Elegimos opción 2 (última registrada: 09:30)
+        inputs = iter(["1", "Tarea Nueva", "", "2", "0"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.run_interactive()
+
+        task = state.load()
+        self.assertIsNotNone(task)
+        self.assertEqual(task.start_time, "09:30")
+        cli.main(["stop"])
+
+        # Ahora probamos la opción por defecto (Enter = hora del sistema)
+        now_str = datetime.now().strftime("%H:%M")
+        inputs = iter(["1", "Tarea Sistema", "", "", "0"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.run_interactive()
+
+        task = state.load()
+        self.assertIsNotNone(task)
+        self.assertEqual(task.start_time, now_str)
+
+    def test_interactive_edit_modify_url(self):
+        from parte_diario import interactive
+        cli.main(["start", "Mi Tarea"])
+        cli.main(["stop"])
+
+        # Date Enter (today), select block 1, name Enter, URL, line 1 start Enter, line 1 end Enter, add line Enter, exit c
+        inputs = iter(["", "1", "", "https://ejemplo.com/modificado", "", "", "", "c"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.interactive_edit()
+
+        today_file = cli._today_file(self.vault_dir)
+        lines = diary.read_lines(today_file)
+        self.assertIn("[Mi Tarea](https://ejemplo.com/modificado)", lines[0])
+
+    def test_interactive_edit_modify_time_range(self):
+        from parte_diario import interactive
+        cli.main(["start", "Tarea Horas"])
+        cli.main(["stop"])
+
+        # Date Enter, select block 1, name Enter, URL Enter, start 08:00, end 09:30, add line Enter, exit c
+        inputs = iter(["", "1", "", "", "08:00", "09:30", "", "c"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.interactive_edit()
+
+        today_file = cli._today_file(self.vault_dir)
+        lines = diary.read_lines(today_file)
+        self.assertIn("08:00 - 09:30", lines[1])
+
+    def test_interactive_edit_modify_name_and_text(self):
+        from parte_diario import interactive
+        cli.main(["start", "Tarea Vieja"])
+        cli.main(["note", "texto viejo"])
+        cli.main(["stop"])
+
+        # Date Enter, select block 1, name Tarea Nueva, URL Enter, line 1 start Enter, line 1 end Enter, line 2 text, add line Enter, exit c
+        inputs = iter(["", "1", "Tarea Nueva", "", "", "", "texto nuevo", "", "c"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.interactive_edit()
+
+        today_file = cli._today_file(self.vault_dir)
+        lines = diary.read_lines(today_file)
+        self.assertEqual(lines[0], "Tarea Nueva")
+        self.assertIn("texto nuevo", lines[2])
+
+    def test_interactive_edit_quick_delete_task(self):
+        from parte_diario import interactive
+        cli.main(["start", "Tarea A Borrar"])
+        cli.main(["stop"])
+
+        today_file = cli._today_file(self.vault_dir)
+        self.assertTrue(len(diary.read_lines(today_file)) > 0)
+
+        # Date Enter, choice 'd 1', confirm 's'
+        inputs = iter(["", "d 1", "s"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.interactive_edit()
+
+        lines = diary.read_lines(today_file)
+        self.assertEqual(len(lines), 0)
+
+    def test_interactive_edit_delete_line_with_d(self):
+        from parte_diario import interactive
+        cli.main(["start", "Tarea Con Notas"])
+        cli.main(["note", "nota a borrar"])
+        cli.main(["stop"])
+
+        # Date Enter, select block 1, name Enter, URL Enter, line 1 start Enter, line 1 end Enter, line 2 'd', add line Enter, exit c
+        inputs = iter(["", "1", "", "", "", "", "d", "", "c"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.interactive_edit()
+
+        today_file = cli._today_file(self.vault_dir)
+        lines = diary.read_lines(today_file)
+        self.assertNotIn("nota a borrar", "\n".join(lines))
+
+    def test_interactive_edit_modify_name_and_finish_with_c(self):
+        from parte_diario import interactive
+        cli.main(["start", "Revisar CE"])
+        cli.main(["stop"])
+
+        # Date Enter, select block 1, name "Revisar Context Engineering", URL "c" (finish and save), exit "c"
+        inputs = iter(["", "1", "Revisar Context Engineering", "c", "c"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.interactive_edit()
+
+        today_file = cli._today_file(self.vault_dir)
+        lines = diary.read_lines(today_file)
+        self.assertEqual(lines[0], "Revisar Context Engineering")
 
     def test_note_and_show(self):
         cli.main(["start", "TareaConNotas"])
