@@ -156,6 +156,93 @@ class TestDiary(unittest.TestCase):
         no_times = ["Tarea 1", "+15", "nota"]
         self.assertIsNone(diary.find_highest_time_in_lines(no_times))
 
+    def test_minutes_between(self):
+        self.assertEqual(diary.minutes_between("08:15", "08:52"), 37)
+        self.assertEqual(diary.minutes_between("08:00", "08:00"), 0)
+        self.assertEqual(diary.minutes_between("23:30", "00:30"), 60)
+
+    def test_get_tasks_summary_closed_ranges_and_adjustments(self):
+        content = [
+            "[Todoencloud](https://odoo.sdi.es/task/1)",
+            "+10",
+            "",
+            "Rev. Context Engineering",
+            "+7",
+            "",
+            "daily hermes",
+            "08:17 - 08:33",
+            "",
+            "biomag",
+            "09:22 - 11:29",
+            "-30",
+            "12:56 - 14:23",
+            "15:26 - 15:44",
+            "",
+            "Renumeracion sensedi",
+            "+30",
+            "11:29 - 11:29",
+        ]
+        items = diary.get_tasks_summary(content, file_date="2026-09-22")
+        self.assertEqual(len(items), 5)
+        # Todoencloud: +10 min
+        self.assertEqual(items[0].name, "Todoencloud")
+        self.assertEqual(items[0].url, "https://odoo.sdi.es/task/1")
+        self.assertEqual(items[0].minutes, 10)
+        # Rev. Context Engineering: +7 min
+        self.assertEqual(items[1].name, "Rev. Context Engineering")
+        self.assertIsNone(items[1].url)
+        self.assertEqual(items[1].minutes, 7)
+        # daily hermes: 16 min
+        self.assertEqual(items[2].name, "daily hermes")
+        self.assertEqual(items[2].minutes, 16)
+        # biomag: 127 - 30 + 87 + 18 = 202 min
+        self.assertEqual(items[3].name, "biomag")
+        self.assertEqual(items[3].minutes, 202)
+        # Renumeracion sensedi: 30 + 0 = 30 min
+        self.assertEqual(items[4].name, "Renumeracion sensedi")
+        self.assertEqual(items[4].minutes, 30)
+
+    def test_get_tasks_summary_skips_notes_and_merges_duplicates(self):
+        content = [
+            "* Nota suelta que debe ser ignorada",
+            "",
+            "[Tarea](https://ejemplo.com/1)",
+            "08:00 - 08:30",
+            "* una nota de la tarea",
+            "",
+            "Tarea",
+            "09:00 - 09:15",
+            "",
+            "> Cita ignorada",
+            "",
+            "Tarea Solo Nota",
+            "* otra nota",
+        ]
+        items = diary.get_tasks_summary(content, file_date="2026-09-22")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].name, "Tarea")
+        self.assertEqual(items[0].url, "https://ejemplo.com/1")
+        self.assertEqual(items[0].minutes, 45)  # 30 + 15
+
+    def test_get_tasks_summary_open_task(self):
+        from datetime import datetime
+        ref_time = datetime(2026, 9, 23, 10, 30)
+        content = [
+            "Tarea En Curso",
+            "10:00 - ",
+        ]
+        # Si la fecha es hoy, calcula el tiempo transcurrido hasta reference_time
+        items_today = diary.get_tasks_summary(content, file_date="2026-09-23", reference_time=ref_time)
+        self.assertEqual(len(items_today), 1)
+        self.assertTrue(items_today[0].is_open)
+        self.assertEqual(items_today[0].minutes, 30)
+
+        # Si la fecha es de un día pasado, no añade tiempo arbitrario
+        items_past = diary.get_tasks_summary(content, file_date="2026-09-20", reference_time=ref_time)
+        self.assertEqual(len(items_past), 1)
+        self.assertTrue(items_past[0].is_open)
+        self.assertEqual(items_past[0].minutes, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

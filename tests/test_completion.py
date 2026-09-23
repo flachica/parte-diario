@@ -19,10 +19,14 @@ class TestCompletion(unittest.TestCase):
     def test_get_completion_script(self):
         bash_script = completion.get_completion_script("bash")
         self.assertIn("complete -F _parte_completions parte", bash_script)
+        self.assertIn("review", bash_script)
+        self.assertIn("repasar", bash_script)
 
         zsh_script = completion.get_completion_script("zsh")
         self.assertIn("#compdef parte", zsh_script)
         self.assertIn("compdef _parte parte", zsh_script)
+        self.assertIn("review", zsh_script)
+        self.assertIn("repasar", zsh_script)
 
         with self.assertRaises(ValueError):
             completion.get_completion_script("fish")

@@ -226,6 +226,105 @@ def append_free_block(lines: List[str], text_lines: List[str]) -> List[str]:
 
 
 CLOSED_LINE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})$")
+ADJUSTMENT_RE = re.compile(r"^([+-])\s*(\d+)(?:\s.*)?$")
+
+
+@dataclass
+class TaskReviewItem:
+    name: str
+    url: Optional[str]
+    minutes: int
+    is_open: bool = False
+
+
+def minutes_between(start_str: str, end_str: str) -> int:
+    """Calcula la diferencia en minutos entre dos horas en formato HH:MM (soporta paso de medianoche)."""
+    s_parts = start_str.split(":")
+    e_parts = end_str.split(":")
+    start_m = int(s_parts[0]) * 60 + int(s_parts[1])
+    end_m = int(e_parts[0]) * 60 + int(e_parts[1])
+    diff = end_m - start_m
+    if diff < 0:
+        diff += 24 * 60
+    return diff
+
+
+def get_tasks_summary(
+    lines: List[str],
+    file_date: Optional[str] = None,
+    reference_time: Optional[datetime] = None,
+) -> List[TaskReviewItem]:
+    """Procesa las líneas de un diario y devuelve el resumen agrupado de tareas,
+    con sus URLs (si tienen) y el total de minutos invertidos."""
+    now = reference_time or datetime.now()
+    today_str = f"{now:%Y-%m-%d}"
+    target_date = file_date or today_str
+    is_today = (target_date == today_str)
+    now_hm = f"{now:%H:%M}"
+
+    blocks = find_blocks(lines)
+    items: List[TaskReviewItem] = []
+
+    for b in blocks:
+        name = b.name.strip()
+        if not name or name.startswith(("*", "-", "+", "#", ">")):
+            continue
+
+        block_mins = 0
+        has_time_entry = False
+        block_is_open = False
+
+        for line in b.lines[1:]:
+            tr = parse_time_range(line)
+            if tr:
+                has_time_entry = True
+                s_str, e_str = tr
+                if e_str:
+                    block_mins += minutes_between(s_str, e_str)
+                else:
+                    block_is_open = True
+                    if is_today:
+                        block_mins += minutes_between(s_str, now_hm)
+            else:
+                adj = ADJUSTMENT_RE.match(line.strip())
+                if adj:
+                    has_time_entry = True
+                    sign = -1 if adj.group(1) == "-" else 1
+                    block_mins += sign * int(adj.group(2))
+
+        if not has_time_entry:
+            continue
+
+        match: Optional[TaskReviewItem] = None
+        if b.url:
+            for item in items:
+                if item.url and item.url == b.url:
+                    match = item
+                    break
+
+        if match is None:
+            for item in items:
+                if item.name.lower() == name.lower():
+                    match = item
+                    break
+
+        if match is not None:
+            match.minutes += block_mins
+            if not match.url and b.url:
+                match.url = b.url
+            if block_is_open:
+                match.is_open = True
+        else:
+            items.append(
+                TaskReviewItem(
+                    name=name,
+                    url=b.url,
+                    minutes=block_mins,
+                    is_open=block_is_open,
+                )
+            )
+
+    return items
 
 
 def parse_time_range(line: str) -> Optional[tuple[str, Optional[str]]]:

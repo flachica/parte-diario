@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -317,6 +318,133 @@ def do_show(fecha: Optional[str] = None, verbose: bool = True) -> Optional[str]:
     return content
 
 
+def _can_color() -> bool:
+    return sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+
+
+def format_navigable_url(url: str, text: Optional[str] = None, color: Optional[bool] = None) -> str:
+    """Devuelve la URL formateada como hipervínculo navegable OSC 8 para la terminal."""
+    display_text = text if text is not None else url
+    use_color = _can_color() if color is None else color
+    if not use_color:
+        return display_text
+    hyperlink = f"\033]8;;{url}\033\\{display_text}\033]8;;\033\\"
+    return f"\033[4;36m{hyperlink}\033[0m"
+
+
+def format_review_item(
+    item: diary.TaskReviewItem,
+    color: Optional[bool] = None,
+    show_names: bool = False,
+) -> str:
+    """Formatea una tarea para el repaso: URL navegable si la tiene, o nombre si no."""
+    use_color = _can_color() if color is None else color
+    if item.url:
+        target = format_navigable_url(item.url, color=use_color)
+        if show_names and item.name and item.name != item.url:
+            name_part = f"\033[90m({item.name})\033[0m" if use_color else f"({item.name})"
+            target = f"{target} {name_part}"
+    else:
+        target = f"\033[1m{item.name}\033[0m" if use_color else item.name
+
+    open_str = " (en curso)" if item.is_open else ""
+    if abs(item.minutes) >= 60:
+        horas, rem = divmod(abs(item.minutes), 60)
+        signo = "-" if item.minutes < 0 else ""
+        dur = f" ({signo}{horas}h {rem:02d}m{open_str})"
+    elif item.is_open:
+        dur = " (en curso)"
+    else:
+        dur = ""
+
+    return f"{target}: {item.minutes} minutos{dur}"
+
+
+def do_review(
+    fecha: Optional[str] = None,
+    verbose: bool = True,
+    show_names: bool = False,
+    color: Optional[bool] = None,
+    iterative: Optional[bool] = None,
+) -> Optional[dict]:
+    vault = get_vault_path()
+    if fecha:
+        try:
+            when = datetime.strptime(fecha, "%Y-%m-%d")
+        except ValueError:
+            if verbose:
+                print(f"Formato de fecha no válido: '{fecha}'. Se espera YYYY-MM-DD.", file=sys.stderr)
+            return None
+    else:
+        when = datetime.now()
+
+    fecha_str = f"{when:%Y-%m-%d}"
+    path = _today_file(vault, when)
+    if not path.exists():
+        if verbose:
+            print(f"No existe {path}", file=sys.stderr)
+        return None
+
+    lines = diary.read_lines(path)
+    items = diary.get_tasks_summary(lines, file_date=fecha_str)
+    total_minutes = sum(item.minutes for item in items)
+    use_color = _can_color() if color is None else color
+
+    if iterative is None:
+        do_iterate = sys.stdin.isatty() and sys.stdout.isatty()
+    else:
+        do_iterate = iterative
+
+    if verbose:
+        if not items:
+            print(f"No hay tareas registradas para el {fecha_str}.")
+        else:
+            total_items = len(items)
+            stopped_early = False
+
+            for idx, item in enumerate(items, 1):
+                item_str = format_review_item(item, color=use_color, show_names=show_names)
+                if do_iterate:
+                    idx_prefix = f"\033[1m[{idx}/{total_items}]\033[0m " if use_color else f"[{idx}/{total_items}] "
+                    print(f"\n{idx_prefix}{item_str}" if idx > 1 else f"{idx_prefix}{item_str}")
+                    if idx < total_items:
+                        prompt = "Mostrar siguiente [Enter] o salir [q]: "
+                        while True:
+                            try:
+                                ans = input(prompt).strip().lower()
+                            except (KeyboardInterrupt, EOFError):
+                                print("\nRepaso finalizado.")
+                                stopped_early = True
+                                break
+
+                            if ans in ("", "s", "si", "sí", "y", "yes", "sig", "siguiente"):
+                                break
+                            elif ans in ("q", "quit", "exit", "salir", "c", "cancel", "cancelar"):
+                                stopped_early = True
+                                break
+                            else:
+                                print("Opción no válida. Pulsa [Enter] para mostrar el siguiente o [q] para salir.")
+                        if stopped_early:
+                            break
+                else:
+                    print(item_str)
+
+            total_h, total_rem = divmod(abs(total_minutes), 60)
+            total_sign = "-" if total_minutes < 0 else ""
+            total_dur = f" ({total_sign}{total_h}h {total_rem:02d}m)" if total_h > 0 else ""
+            if stopped_early:
+                print(f"\n(Repaso interrumpido. Total del día: {total_minutes} minutos{total_dur})")
+            else:
+                print(f"\nTotal: {total_minutes} minutos{total_dur}")
+
+    return {
+        "date": fecha_str,
+        "file": str(path),
+        "tasks": items,
+        "total_minutes": total_minutes,
+    }
+
+
 def do_config_set_vault(ruta: Path | str) -> Path:
     path = Path(ruta).expanduser().resolve()
     set_vault_path(path)
@@ -368,6 +496,17 @@ def cmd_config(args: argparse.Namespace) -> None:
 def cmd_show(args: argparse.Namespace) -> None:
     content = do_show(args.fecha)
     if content is None:
+        raise SystemExit(1)
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    iterative = False if args.todo else (True if args.iterativo else None)
+    res = do_review(
+        args.fecha,
+        show_names=getattr(args, "nombres", False),
+        iterative=iterative,
+    )
+    if res is None:
         raise SystemExit(1)
 
 
@@ -473,6 +612,32 @@ def build_parser(parser_cls: Type[argparse.ArgumentParser] = argparse.ArgumentPa
     p_show = sub.add_parser("show", help="Muestra el contenido del diario de hoy (o de --fecha)")
     p_show.add_argument("--fecha", help="Fecha en formato YYYY-MM-DD", default=None)
     p_show.set_defaults(func=cmd_show)
+
+    p_review = sub.add_parser(
+        "review",
+        aliases=["repasar", "repaso"],
+        help="Repasa el parte del día mostrando URLs o tareas y minutos totales",
+    )
+    p_review.add_argument("--fecha", help="Fecha en formato YYYY-MM-DD (por defecto: hoy)", default=None)
+    p_review.add_argument(
+        "--con-nombre", "--nombres",
+        dest="nombres",
+        action="store_true",
+        help="Muestra también el nombre de la tarea si tiene URL asociada",
+    )
+    p_review.add_argument(
+        "--todo", "--all",
+        dest="todo",
+        action="store_true",
+        help="Muestra todas las tareas de golpe sin pausar de una en una",
+    )
+    p_review.add_argument(
+        "--iterativo", "-s", "--step",
+        dest="iterativo",
+        action="store_true",
+        help="Fuerza el modo iterativo de una en una",
+    )
+    p_review.set_defaults(func=cmd_review)
 
     p_edit = sub.add_parser(
         "edit",

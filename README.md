@@ -64,7 +64,16 @@ Queda guardado en `~/.config/parte-diario/config.json`, así no hace falta repet
 
 ### Modo interactivo
 
-Ejecutar `parte` sin argumentos abre una sesión interactiva completa con menú de acciones, selección de tareas del día, autocompletado y atajos directos:
+Ejecutar `parte` sin argumentos abre una sesión interactiva completa organizada en **dos secciones** fijas para máxima comodidad visual:
+
+- **Sección 1 (Superior - Operaciones y Estado)**: Mantiene siempre fija y visible en pantalla la leyenda completa de operaciones (`[1]` a `[10]`), la ruta del vault y el **estado de la tarea en curso** (`● Tarea (URL) · desde HH:MM (duración)`), actualizándose en cada acción sin perderse por scroll.
+- **Sección 2 (Inferior - Resultados y Actividad)**: Muestra claramente la salida, confirmaciones y datos de la última operación ejecutada, seguida del prompt interactivo `parte> `.
+
+Atajos útiles en el modo interactivo:
+- **`[Enter]` (vacío)**: Refresca la pantalla al instante y actualiza el tiempo transcurrido de la tarea activa.
+- **`[?]` (o `help` / `menu`)**: Muestra la chuleta de comandos y atajos en el panel de resultados.
+- **`clear` / `cls`**: Limpia el panel de resultados.
+- **`[0]` (o `q` / `exit`)**: Sale de la aplicación.
 
 ```bash
 parte                                                   # Abre el modo interactivo
@@ -82,6 +91,11 @@ parte note "Hay que sincronizar la base de datos"       # nota dentro del trabaj
 parte note "Idea suelta" --loose                        # nota suelta, no ligada a ningún trabajo
 parte show                                              # vuelca el diario de hoy
 parte show --fecha 2026-09-10                           # vuelca el diario de otro día
+parte review                                            # repasa el parte de hoy iterativamente (tarea por tarea)
+parte review --fecha 2026-09-10                         # repasa el parte de otro día
+parte repasar                                           # alias de 'parte review'
+parte review --todo                                     # muestra todas las tareas de golpe sin pausar de una en una
+parte review --con-nombre                               # muestra también el nombre descriptivo si tiene URL
 
 parte interrupt "Llamada de un cliente" 15              # atiendes algo 15 min sin parar el cronómetro:
                                                          # resta 15 min a la tarea abierta (sigue abierta) y
@@ -89,6 +103,18 @@ parte interrupt "Llamada de un cliente" 15              # atiendes algo 15 min s
 parte log "Tarea suelta" 15                             # anota una tarea con solo minutos, sin horas (+15)
 parte log "Corrección" 30 --resta                       # igual, pero en negativo (-30), sin tocar la tarea abierta
 ```
+
+### Repaso del parte (`parte review` / `parte repasar`)
+
+Para rellenar el parte de horas en herramientas de gestión (Odoo, Jira, etc.) o revisar la jornada al final del día:
+
+- **Iterativo (tarea por tarea)**: Se muestra cada tarea con su índice (ej. `[1/9]`) y se pausa preguntando si deseas ver la siguiente (`[Enter]`) o salir (`[q]`). Ideal para ir imputando una a una en el navegador sin perderte. Si prefieres ver todas juntas sin pausas, usa `--todo` (o `--all`).
+- Muestra para cada tarea su **URL navegable** (enlace clicable OSC 8 para terminales modernas como GNOME Terminal) si la tiene, o el **nombre de la tarea** si no tiene URL.
+- Informa de la **cantidad total de minutos** invertidos (sumando todos los rangos cerrados y ajustes `+N` / `-N`, agrupando si se ha reanudado la misma tarea).
+- Si la tarea está actualmente abierta, calcula los minutos transcurridos hasta la hora actual indicando `(en curso)`.
+- Ofrece el desglose en horas y minutos (ej. `108 minutos (1h 48m)`) y el total acumulado de la jornada.
+
+En el modo interactivo (`parte`), está disponible pulsando **`[9]`** (o escribiendo `review`, `repasar` o `r`).
 
 ## Reglas que aplica
 
@@ -106,5 +132,4 @@ El trabajo abierto se guarda en `~/.local/state/parte-diario/estado.json` (tarea
 
 ## Qué NO hace (a propósito)
 
-- No reordena ni reescribe bloques existentes; solo añade líneas nuevas al final del bloque que corresponda o del fichero.
-- No calcula el parte de horas final; solo deja el diario bien formado para rellenarlo después.
+- No reordena ni reescribe bloques existentes; solo añade líneas nuevas al final del bloque que corresponda o del fichero (salvo cuando se edita deliberadamente con `parte edit`).

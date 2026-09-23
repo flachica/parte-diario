@@ -361,6 +361,202 @@ class TestCLI(unittest.TestCase):
             self.assertIn("show", matches)
             self.assertIn("set-vault", matches)
 
+        with patch("readline.get_line_buffer", return_value="r"):
+            matches = []
+            idx = 0
+            while True:
+                res = completer.complete("r", idx)
+                if res is None:
+                    break
+                matches.append(res)
+                idx += 1
+            self.assertIn("review", matches)
+            self.assertIn("repasar", matches)
+
+    def test_review_today_and_specific_date(self):
+        file_path = self.vault_dir / "2026-09-22.md"
+        file_path.write_text(
+            "[Todoencloud](https://odoo.sdi.es/task/1)\n"
+            "+10\n\n"
+            "daily hermes\n"
+            "08:17 - 08:33\n\n"
+            "biomag\n"
+            "09:00 - 11:00\n",
+            encoding="utf-8",
+        )
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["review", "--fecha", "2026-09-22"])
+        out = f.getvalue()
+        self.assertIn("https://odoo.sdi.es/task/1: 10 minutos", out)
+        self.assertIn("daily hermes: 16 minutos", out)
+        self.assertIn("biomag: 120 minutos (2h 00m)", out)
+        self.assertIn("Total: 146 minutos (2h 26m)", out)
+
+    def test_review_aliases_and_flags(self):
+        file_path = self.vault_dir / "2026-09-22.md"
+        file_path.write_text(
+            "[Todoencloud](https://odoo.sdi.es/task/1)\n"
+            "+10\n",
+            encoding="utf-8",
+        )
+        # Test alias repasar
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["repasar", "--fecha", "2026-09-22"])
+        self.assertIn("https://odoo.sdi.es/task/1: 10 minutos", f.getvalue())
+
+        # Test alias repaso
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["repaso", "--fecha", "2026-09-22"])
+        self.assertIn("https://odoo.sdi.es/task/1: 10 minutos", f.getvalue())
+
+        # Test --con-nombre / --nombres
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["review", "--fecha", "2026-09-22", "--nombres"])
+        self.assertIn("https://odoo.sdi.es/task/1 (Todoencloud): 10 minutos", f.getvalue())
+
+    def test_review_nonexistent_and_empty(self):
+        with self.assertRaises(SystemExit) as cm:
+            cli.main(["review", "--fecha", "1999-01-01"])
+        self.assertEqual(cm.exception.code, 1)
+
+        empty_file = self.vault_dir / "2026-09-22.md"
+        empty_file.write_text("", encoding="utf-8")
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["review", "--fecha", "2026-09-22"])
+        self.assertIn("No hay tareas registradas para el 2026-09-22", f.getvalue())
+
+    def test_interactive_review(self):
+        from parte_diario import interactive
+        file_path = self.vault_dir / "2026-09-22.md"
+        file_path.write_text(
+            "daily hermes\n"
+            "08:17 - 08:33\n\n"
+            "biomag\n"
+            "09:00 - 09:30\n",
+            encoding="utf-8",
+        )
+        # Inputs: 9 (menú), fecha, Enter (siguiente tarea), 0 (salir)
+        inputs = ["9", "2026-09-22", "", "0"]
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
+            interactive.run_interactive()
+        out = f.getvalue()
+        self.assertIn("Repaso del parte: 2026-09-22", out)
+        self.assertIn("[1/2] daily hermes: 16 minutos", out)
+        self.assertIn("[2/2] biomag: 30 minutos", out)
+        self.assertIn("Total: 46 minutos", out)
+
+    def test_review_iterative_step_by_step(self):
+        file_path = self.vault_dir / "2026-09-22.md"
+        file_path.write_text(
+            "[Todoencloud](https://odoo.sdi.es/task/1)\n"
+            "+10\n\n"
+            "daily hermes\n"
+            "08:17 - 08:33\n",
+            encoding="utf-8",
+        )
+        inputs = [""]  # Enter para avanzar
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
+            cli.main(["review", "--fecha", "2026-09-22", "--iterativo"])
+        out = f.getvalue()
+        self.assertIn("[1/2] https://odoo.sdi.es/task/1: 10 minutos", out)
+        self.assertIn("[2/2] daily hermes: 16 minutos", out)
+        self.assertIn("Total: 26 minutos", out)
+
+    def test_review_iterative_stop_early(self):
+        file_path = self.vault_dir / "2026-09-22.md"
+        file_path.write_text(
+            "[Todoencloud](https://odoo.sdi.es/task/1)\n"
+            "+10\n\n"
+            "daily hermes\n"
+            "08:17 - 08:33\n",
+            encoding="utf-8",
+        )
+        inputs = ["q"]  # salir en la primera tarea
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
+            cli.main(["review", "--fecha", "2026-09-22", "--iterativo"])
+        out = f.getvalue()
+        self.assertIn("[1/2] https://odoo.sdi.es/task/1: 10 minutos", out)
+        self.assertNotIn("daily hermes", out)
+        self.assertIn("Repaso interrumpido", out)
+        self.assertIn("Total del día: 26 minutos", out)
+
+    def test_review_todo_flag(self):
+        file_path = self.vault_dir / "2026-09-22.md"
+        file_path.write_text(
+            "[Todoencloud](https://odoo.sdi.es/task/1)\n"
+            "+10\n\n"
+            "daily hermes\n"
+            "08:17 - 08:33\n",
+            encoding="utf-8",
+        )
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["review", "--fecha", "2026-09-22", "--todo"])
+        out = f.getvalue()
+        self.assertIn("https://odoo.sdi.es/task/1: 10 minutos", out)
+        self.assertIn("daily hermes: 16 minutos", out)
+    def test_interactive_dashboard_two_sections_and_help(self):
+        from parte_diario import interactive
+        inputs = iter(["?", "0"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.run_interactive()
+        out = f.getvalue()
+        # Sección 1 presente
+        self.assertIn("PARTE DIARIO - MODO INTERACTIVO", out)
+        self.assertIn("[1] Iniciar / reanudar tarea", out)
+        self.assertIn("[2] Parar tarea abierta (stop)", out)
+        self.assertIn("[0] Salir (q / exit)", out)
+        # Sección 2 presente
+        self.assertIn("RESULTADOS / ACTIVIDAD", out)
+        self.assertIn("Comandos y atajos disponibles:", out)
+        self.assertIn("¡Hasta luego!", out)
+
+    def test_interactive_dashboard_result_in_section_2(self):
+        from parte_diario import interactive
+        # Ejecutar '7' (status) y luego '0' (salir)
+        inputs = iter(["7", "0"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.run_interactive()
+        out = f.getvalue()
+        self.assertIn("RESULTADOS / ACTIVIDAD", out)
+        self.assertIn("No hay ningún trabajo abierto.", out)
+
+    def test_interactive_dashboard_active_task_in_section_1(self):
+        from parte_diario import interactive
+        cli.main(["start", "Mi Tarea Especial", "--url", "https://ejemplo.com/123"])
+        inputs = iter(["note Nota de prueba", "0"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.run_interactive()
+        out = f.getvalue()
+        # Sección 1 debe mostrar la tarea activa y su URL
+        self.assertIn("Mi Tarea Especial", out)
+        self.assertIn("https://ejemplo.com/123", out)
+        # Sección 2 debe mostrar el resultado de la nota añadida
+        self.assertIn("RESULTADOS / ACTIVIDAD", out)
+        self.assertIn("Nota añadida a 'Mi Tarea Especial': Nota de prueba", out)
+
+    def test_interactive_clear_and_can_clear(self):
+        from parte_diario import interactive
+        # En redirect_stdout, sys.stdout no es tty, por lo que _can_clear() debe ser False
+        self.assertFalse(interactive._can_clear())
+
+        # clear_screen no debe imprimir secuencias ANSI cuando _can_clear() es False
+        f = io.StringIO()
+        with redirect_stdout(f):
+            interactive.clear_screen()
+        self.assertEqual(f.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

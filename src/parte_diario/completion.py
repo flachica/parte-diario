@@ -18,7 +18,7 @@ _parte_completions() {
         cword=$COMP_CWORD
     fi
 
-    local commands="start stop status note show edit log interrupt config interactive completion"
+    local commands="start stop status note show edit log interrupt config interactive completion review repasar"
     local config_commands="show set-vault"
 
     if [[ $cword -eq 1 ]]; then
@@ -42,6 +42,12 @@ _parte_completions() {
                 return 0
             fi
             COMPREPLY=( $(compgen -W "--fecha --editor" -- "$cur") )
+            ;;
+        review|repasar)
+            if [[ "$prev" == "--fecha" ]]; then
+                return 0
+            fi
+            COMPREPLY=( $(compgen -W "--fecha --con-nombre --nombres --todo --all --iterativo" -- "$cur") )
             ;;
         note)
             COMPREPLY=( $(compgen -W "--loose --suelta" -- "$cur") )
@@ -94,6 +100,8 @@ _parte() {
         'config:Consulta o fija la ruta del vault'
         'interactive:Inicia el modo interactivo'
         'completion:Genera o instala el script de autocompletado'
+        'review:Repasa el parte del día mostrando URLs o tareas y minutos totales'
+        'repasar:Repasa el parte del día mostrando URLs o tareas y minutos totales'
     )
 
     _arguments -C \\
@@ -121,6 +129,13 @@ _parte() {
                     _arguments \\
                         '--fecha[Fecha en formato YYYY-MM-DD]:fecha:' \\
                         '(-e --editor)'{-e,--editor}'[Abre directamente en el editor de texto]'
+                    ;;
+                review|repasar)
+                    _arguments \\
+                        '--fecha[Fecha en formato YYYY-MM-DD]:fecha:' \\
+                        '(--con-nombre --nombres)'{--con-nombre,--nombres}'[Muestra también el nombre de la tarea si tiene URL]' \\
+                        '(--todo --all)'{--todo,--all}'[Muestra todas las tareas de golpe sin pausar]' \\
+                        '(--iterativo -s --step)'{--iterativo,-s,--step}'[Fuerza el modo iterativo de una en una]'
                     ;;
                 note)
                     _arguments \\
