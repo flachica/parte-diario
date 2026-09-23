@@ -440,8 +440,8 @@ class TestCLI(unittest.TestCase):
             "09:00 - 09:30\n",
             encoding="utf-8",
         )
-        # Inputs: 9 (menú), fecha, Enter (siguiente tarea), 0 (salir)
-        inputs = ["9", "2026-09-22", "", "0"]
+        # Inputs: 8 (menú review), fecha, Enter (siguiente tarea), 0 (salir)
+        inputs = ["8", "2026-09-22", "", "0"]
         f = io.StringIO()
         with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
             interactive.run_interactive()
@@ -522,8 +522,8 @@ class TestCLI(unittest.TestCase):
 
     def test_interactive_dashboard_result_in_section_2(self):
         from parte_diario import interactive
-        # Ejecutar '7' (status) y luego '0' (salir)
-        inputs = iter(["7", "0"])
+        # Ejecutar 'status' y luego '0' (salir)
+        inputs = iter(["status", "0"])
         f = io.StringIO()
         with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
             interactive.run_interactive()
@@ -556,6 +556,68 @@ class TestCLI(unittest.TestCase):
         with redirect_stdout(f):
             interactive.clear_screen()
         self.assertEqual(f.getvalue(), "")
+
+    def test_interactive_menu_options_1_to_9_without_option_7_status(self):
+        from parte_diario import interactive
+        inputs = iter(["0"])
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=lambda *args: next(inputs)), redirect_stdout(f):
+            interactive.run_interactive()
+        out = f.getvalue()
+        self.assertIn("[1] Iniciar / reanudar tarea", out)
+        self.assertIn("[6] Ver diario de hoy / fecha", out)
+        self.assertIn("[7] Editar entradas (edit)", out)
+        self.assertIn("[8] Repasar parte (review)", out)
+        self.assertIn("[9] Configurar vault", out)
+        self.assertNotIn("[7] Ver tarea abierta", out)
+        self.assertNotIn("[10]", out)
+
+    def test_resumed_task_shows_real_start_time_and_accumulated_minutes(self):
+        from parte_diario import interactive
+        today_file = cli._today_file(self.vault_dir)
+        # Escribimos una tarea previa con varios slots cerrados
+        diary.write_lines(
+            today_file,
+            [
+                "Espartero",
+                "08:45 - 10:00",  # 75 min
+                "10:33 - 11:02",  # 29 min
+                "11:20 - 11:52",  # 32 min
+            ],
+        )
+        now_str = datetime.now().strftime("%H:%M")
+        # Re-iniciamos la tarea a la hora actual (para que el tramo abierto empiece con 0m de ese slot)
+        cli.main(["start", "Espartero", "--hora", now_str])
+
+        open_task = state.load()
+        self.assertIsNotNone(open_task)
+        self.assertEqual(open_task.start_time, now_str)
+        self.assertEqual(open_task.real_start_time, "08:45")
+
+        info = cli.get_status_info()
+        self.assertIsNotNone(info)
+        # Debe haber pillado la hora de inicio real (08:45), no la del último slot
+        self.assertEqual(info["start_time"], "08:45")
+        self.assertEqual(info["slot_start_time"], now_str)
+        # Los minutos acumulados deben ser al menos los 136 min previos de los slots anteriores
+        self.assertEqual(info["total_minutes"], 136)
+        self.assertEqual(info["hours"], 2)
+        self.assertEqual(info["minutes"], 16)
+
+        # En la línea de estado del dashboard
+        status_line = interactive.format_status_line()
+        self.assertIn("desde 08:45", status_line)
+        self.assertIn("2h 16m", status_line)
+
+        # En el comando status
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cli.main(["status"])
+        out = f.getvalue()
+        self.assertIn("Inicio:", out)
+        self.assertIn("08:45", out)
+        self.assertIn(f"último slot: {now_str}", out)
+        self.assertIn("Duración:", out)
 
 
 if __name__ == "__main__":

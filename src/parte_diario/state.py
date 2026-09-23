@@ -16,6 +16,7 @@ class OpenTask:
     file: str
     date: str
     start_time: str
+    real_start_time: Optional[str] = None
 
 
 def load() -> Optional[OpenTask]:

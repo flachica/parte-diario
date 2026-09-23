@@ -195,6 +195,27 @@ def find_open_task_in_lines(lines: List[str]) -> Optional[tuple[str, str]]:
     return None
 
 
+def find_first_start_time_for_task(
+    lines: List[str],
+    name: str,
+    url: Optional[str] = None,
+) -> Optional[str]:
+    """Busca la hora de inicio del primer tramo/slot registrado para una tarea en las líneas dadas."""
+    target_name = name.strip().lower()
+    target_url = url.strip() if url else None
+
+    for b in find_blocks(lines):
+        match_name = b.name.strip().lower() == target_name
+        match_url = bool(target_url and b.url and b.url == target_url)
+        if match_name or match_url:
+            for line in b.lines[1:]:
+                tr = parse_time_range(line)
+                if tr:
+                    s_parts = tr[0].split(":")
+                    return f"{int(s_parts[0]):02d}:{int(s_parts[1]):02d}"
+    return None
+
+
 def add_note_to_block(lines: List[str], name: str, note: str) -> Optional[List[str]]:
     block = find_block_by_name(lines, name)
     if block is None:
@@ -325,6 +346,59 @@ def get_tasks_summary(
             )
 
     return items
+
+
+def get_task_total_minutes(
+    lines: List[str],
+    name: str,
+    url: Optional[str] = None,
+    file_date: Optional[str] = None,
+    open_slot_start: Optional[str] = None,
+    reference_time: Optional[datetime] = None,
+) -> int:
+    """Calcula los minutos totales invertidos en una tarea en el fichero,
+    sumando tramos cerrados, ajustes y el tramo abierto actual (si lo hay)."""
+    now = reference_time or datetime.now()
+    today_str = f"{now:%Y-%m-%d}"
+    target_date = file_date or today_str
+
+    target_name = name.strip().lower()
+    target_url = url.strip() if url else None
+
+    total_mins = 0
+    found_open_in_file: Optional[str] = None
+
+    for b in find_blocks(lines):
+        match_name = b.name.strip().lower() == target_name
+        match_url = bool(target_url and b.url and b.url == target_url)
+        if not (match_name or match_url):
+            continue
+
+        for line in b.lines[1:]:
+            tr = parse_time_range(line)
+            if tr:
+                s_str, e_str = tr
+                if e_str:
+                    total_mins += minutes_between(s_str, e_str)
+                else:
+                    found_open_in_file = s_str
+            else:
+                adj = ADJUSTMENT_RE.match(line.strip())
+                if adj:
+                    sign = -1 if adj.group(1) == "-" else 1
+                    total_mins += sign * int(adj.group(2))
+
+    active_start = open_slot_start or found_open_in_file
+    if active_start:
+        try:
+            start_dt = datetime.strptime(f"{target_date} {active_start}", "%Y-%m-%d %H:%M")
+            elapsed = int((now - start_dt).total_seconds() // 60)
+            if elapsed > 0:
+                total_mins += elapsed
+        except Exception:
+            pass
+
+    return total_mins
 
 
 def parse_time_range(line: str) -> Optional[tuple[str, Optional[str]]]:

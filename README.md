@@ -66,7 +66,7 @@ Queda guardado en `~/.config/parte-diario/config.json`, así no hace falta repet
 
 Ejecutar `parte` sin argumentos abre una sesión interactiva completa organizada en **dos secciones** fijas para máxima comodidad visual:
 
-- **Sección 1 (Superior - Operaciones y Estado)**: Mantiene siempre fija y visible en pantalla la leyenda completa de operaciones (`[1]` a `[10]`), la ruta del vault y el **estado de la tarea en curso** (`● Tarea (URL) · desde HH:MM (duración)`), actualizándose en cada acción sin perderse por scroll.
+- **Sección 1 (Superior - Operaciones y Estado)**: Mantiene siempre fija y visible en pantalla la leyenda completa de operaciones (`[1]` a `[9]`), la ruta del vault y el **estado de la tarea en curso** (`● Tarea (URL) · desde HH:MM (duración)`), actualizándose en cada acción sin perderse por scroll.
 - **Sección 2 (Inferior - Resultados y Actividad)**: Muestra claramente la salida, confirmaciones y datos de la última operación ejecutada, seguida del prompt interactivo `parte> `.
 
 Atajos útiles en el modo interactivo:

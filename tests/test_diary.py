@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 from parte_diario import diary
 
 
@@ -242,6 +243,58 @@ class TestDiary(unittest.TestCase):
         self.assertEqual(len(items_past), 1)
         self.assertTrue(items_past[0].is_open)
         self.assertEqual(items_past[0].minutes, 0)
+
+    def test_find_first_start_time_for_task(self):
+        lines = [
+            "Espartero",
+            "08:45 - 10:00",
+            "10:33 - 11:02",
+            "11:20 - 11:52",
+            "11:59 - ",
+        ]
+        first = diary.find_first_start_time_for_task(lines, "Espartero")
+        self.assertEqual(first, "08:45")
+
+        # Tarea que no existe
+        self.assertIsNone(diary.find_first_start_time_for_task(lines, "Inexistente"))
+
+        # Tarea con link markdown
+        lines_link = [
+            "[Mi Tarea](https://ejemplo.com)",
+            "09:15 - 10:00",
+        ]
+        self.assertEqual(diary.find_first_start_time_for_task(lines_link, "Mi Tarea"), "09:15")
+        self.assertEqual(diary.find_first_start_time_for_task(lines_link, "Otro", url="https://ejemplo.com"), "09:15")
+
+    def test_get_task_total_minutes(self):
+        lines = [
+            "Espartero",
+            "08:45 - 10:00",  # 75 min
+            "-15",            # -15 min
+            "10:33 - 11:02",  # 29 min
+            "11:20 - 11:52",  # 32 min
+            "11:59 - ",       # tramo abierto
+        ]
+        # A las 11:59 (0 min en el tramo abierto)
+        ref_start = datetime(2026, 9, 23, 11, 59)
+        total_at_start = diary.get_task_total_minutes(
+            lines,
+            "Espartero",
+            file_date="2026-09-23",
+            reference_time=ref_start,
+        )
+        # 75 - 15 + 29 + 32 = 121
+        self.assertEqual(total_at_start, 121)
+
+        # 30 minutos después (12:29)
+        ref_later = datetime(2026, 9, 23, 12, 29)
+        total_later = diary.get_task_total_minutes(
+            lines,
+            "Espartero",
+            file_date="2026-09-23",
+            reference_time=ref_later,
+        )
+        self.assertEqual(total_later, 121 + 30)
 
 
 if __name__ == "__main__":

@@ -219,17 +219,17 @@ def format_status_line() -> str:
 def format_help() -> str:
     lines = [
         bold("Comandos y atajos disponibles:"),
-        f"  {bold('1-10')}               Ejecuta la opción del menú superior",
+        f"  {bold('1-9')}                Ejecuta la opción del menú superior",
         f"  {bold('start')} <tarea>       Inicia una tarea (opcionales: --url, --hora, --latest)",
         f"  {bold('stop')}                Cierra la tarea actualmente abierta",
-        f"  {bold('status')} (o 7)        Muestra la información de la tarea abierta",
+        f"  {bold('status')}              Muestra la información de la tarea abierta",
         f"  {bold('note')} <texto>        Añade una nota al trabajo actual (o --loose)",
         f"  {bold('interrupt')} <motivo> <min>  Resta minutos a la tarea abierta y anota la interrupción",
         f"  {bold('log')} <tarea> <min>   Anota minutos sueltos (+ o con --resta)",
         f"  {bold('show')}                Muestra el diario de hoy (o con --fecha YYYY-MM-DD)",
-        f"  {bold('review')} (o 9)        Repasa el parte del día paso a paso (o con --todo)",
-        f"  {bold('edit')} (o 8)          Edita entradas interactivamente (o -e para abrir $EDITOR)",
-        f"  {bold('config')} show|set-vault  Muestra o fija la ruta del vault",
+        f"  {bold('edit')} (o 7)          Edita entradas interactivamente (o -e para abrir $EDITOR)",
+        f"  {bold('review')} (o 8)        Repasa el parte del día paso a paso (o con --todo)",
+        f"  {bold('config')} (o 9)        Muestra o fija la ruta del vault",
         f"  {bold('[Enter]')}             Refresca la pantalla y actualiza el tiempo transcurrido",
         f"  {bold('clear / cls')}         Limpia la sección de resultados",
         f"  {bold('0 / q / exit')}        Salir de la aplicación",
@@ -253,10 +253,10 @@ def print_dashboard(result_content: Optional[str] = None, clear: bool = True) ->
     print(f" Estado: {status_line}")
     print("-" * width)
     print(f" {bold('[1]')} Iniciar / reanudar tarea       {bold('[6]')} Ver diario de hoy / fecha")
-    print(f" {bold('[2]')} Parar tarea abierta (stop)     {bold('[7]')} Ver tarea abierta")
-    print(f" {bold('[3]')} Añadir nota (note)             {bold('[8]')} Editar entradas (edit)")
-    print(f" {bold('[4]')} Registrar interrupción         {bold('[9]')} Repasar parte (review)")
-    print(f" {bold('[5]')} Anotar minutos sueltos (log)  {bold('[10]')} Configurar vault")
+    print(f" {bold('[2]')} Parar tarea abierta (stop)     {bold('[7]')} Editar entradas (edit)")
+    print(f" {bold('[3]')} Añadir nota (note)             {bold('[8]')} Repasar parte (review)")
+    print(f" {bold('[4]')} Registrar interrupción         {bold('[9]')} Configurar vault")
+    print(f" {bold('[5]')} Anotar minutos sueltos (log)")
     print()
     print(f" {bold('[0]')} Salir (q / exit)               {bold('[?]')} Ayuda / Atajos")
     print("=" * width)
@@ -269,7 +269,7 @@ def print_dashboard(result_content: Optional[str] = None, clear: bool = True) ->
         for line in result_content.splitlines():
             print(f" {line}")
     else:
-        print(dim(" Selecciona una opción [1-10] o escribe un comando (Enter para refrescar)."))
+        print(dim(" Selecciona una opción [1-9] o escribe un comando (Enter para refrescar)."))
     print(cyan("─" * width))
 
 
@@ -280,7 +280,7 @@ def print_banner() -> None:
 def print_status_bar() -> None:
     print("-" * 70)
     print(f" Estado: {format_status_line()}")
-    print(dim(" Opciones: [1] Iniciar  [2] Parar  [3] Nota  [4] Interrumpir  [5] Minutos  [6] Ver  [7] Tarea  [8] Editar  [9] Repasar  [10] Config  [0] Salir"))
+    print(dim(" Opciones: [1] Iniciar  [2] Parar  [3] Nota  [4] Interrumpir  [5] Minutos  [6] Ver  [7] Editar  [8] Repasar  [9] Config  [0] Salir"))
 
 
 def get_today_tasks() -> List[Tuple[str, Optional[str]]]:
@@ -378,8 +378,15 @@ def interactive_stop() -> Optional[str]:
     if open_task is None:
         return yellow("No hay ningún trabajo abierto para parar.")
 
+    info = get_status_info()
+    start_disp = info["start_time"] if info else getattr(open_task, "real_start_time", None) or open_task.start_time
+    if info and info.get("slot_start_time") and info["slot_start_time"] != info["start_time"]:
+        prompt_txt = f"¿Cerrar '{bold(open_task.name)}' (iniciada a las {start_disp}, slot {info['slot_start_time']})? [S/n]: "
+    else:
+        prompt_txt = f"¿Cerrar '{bold(open_task.name)}' iniciada a las {start_disp}? [S/n]: "
+
     try:
-        confirm = input(f"¿Cerrar '{bold(open_task.name)}' iniciada a las {open_task.start_time}? [S/n]: ").strip().lower()
+        confirm = input(prompt_txt).strip().lower()
     except (KeyboardInterrupt, EOFError):
         return "Operación cancelada."
 
@@ -599,6 +606,7 @@ def _refresh_state_from_file(path: Path) -> None:
         task_name, start_time = open_info
         block = diary.find_block_by_name(lines, task_name)
         url = block.url if block else None
+        first_start = diary.find_first_start_time_for_task(lines, task_name, url) or start_time
         state.save(
             state.OpenTask(
                 name=task_name,
@@ -606,6 +614,7 @@ def _refresh_state_from_file(path: Path) -> None:
                 file=str(path),
                 date=datetime.now().strftime("%Y-%m-%d"),
                 start_time=start_time,
+                real_start_time=first_start,
             )
         )
     else:
@@ -1013,17 +1022,17 @@ def run_interactive() -> None:
                 last_result = interactive_log() or last_result
             elif line in ("6", "show"):
                 last_result = interactive_show() or last_result
-            elif line in ("7", "status", "tarea"):
+            elif line in ("7", "edit", "editar"):
+                last_result = interactive_edit() or "✓ Edición finalizada."
+            elif line in ("8", "r", "review", "repasar", "repaso"):
+                last_result = interactive_review() or "✓ Repaso finalizado."
+            elif line in ("9", "config"):
+                last_result = interactive_config() or "Configuración finalizada."
+            elif line in ("status", "tarea"):
                 buf = io.StringIO()
                 with redirect_stdout(buf), redirect_stderr(buf):
                     do_status()
                 last_result = buf.getvalue().strip() or "Sin trabajo abierto actualmente."
-            elif line in ("8", "edit", "editar"):
-                last_result = interactive_edit() or "✓ Edición finalizada."
-            elif line in ("9", "r", "review", "repasar", "repaso"):
-                last_result = interactive_review() or "✓ Repaso finalizado."
-            elif line in ("10", "config"):
-                last_result = interactive_config() or "Configuración finalizada."
             else:
                 try:
                     parts = shlex.split(line)
@@ -1054,7 +1063,7 @@ def run_interactive() -> None:
                             dispatch_command(parts)
                         last_result = buf.getvalue().strip() or "✓ Comando ejecutado."
                 else:
-                    last_result = yellow(f"Opción no reconocida: '{line}'. Escribe un número [1-10], un comando, o '?' para ver el menú.")
+                    last_result = yellow(f"Opción no reconocida: '{line}'. Escribe un número [1-9], un comando, o '?' para ver el menú.")
 
     finally:
         if HAVE_READLINE:

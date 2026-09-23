@@ -109,6 +109,8 @@ def do_start(
             if m:
                 url = m.group("url")
 
+    first_start = diary.find_first_start_time_for_task(new_lines, nombre, url) or chosen_start
+
     state.save(
         state.OpenTask(
             name=nombre,
@@ -116,6 +118,7 @@ def do_start(
             file=str(today_file),
             date=f"{now:%Y-%m-%d}",
             start_time=chosen_start,
+            real_start_time=first_start,
         )
     )
 
@@ -152,33 +155,60 @@ def get_status_info() -> Optional[dict]:
                     if m:
                         url = m.group("url")
                 now = datetime.now()
+                first_start = diary.find_first_start_time_for_task(lines, task_name, url) or start_time
                 open_task = state.OpenTask(
                     name=task_name,
                     url=url,
                     file=str(today_file),
                     date=f"{now:%Y-%m-%d}",
                     start_time=start_time,
+                    real_start_time=first_start,
                 )
                 state.save(open_task)
 
     if open_task is None:
         return None
 
-    try:
-        start_dt = datetime.strptime(f"{open_task.date} {open_task.start_time}", "%Y-%m-%d %H:%M")
-        elapsed = datetime.now() - start_dt
-        minutes = int(elapsed.total_seconds() // 60)
-        horas, mins = divmod(max(minutes, 0), 60)
-    except Exception:
-        horas, mins = 0, 0
+    task_file = Path(open_task.file)
+    first_start = getattr(open_task, "real_start_time", None) or open_task.start_time
+    total_minutes = None
+
+    if task_file.exists():
+        try:
+            lines = diary.read_lines(task_file)
+            found_start = diary.find_first_start_time_for_task(lines, open_task.name, open_task.url)
+            if found_start:
+                first_start = found_start
+            total_minutes = diary.get_task_total_minutes(
+                lines,
+                open_task.name,
+                url=open_task.url,
+                file_date=open_task.date,
+                open_slot_start=open_task.start_time,
+            )
+        except Exception:
+            pass
+
+    if total_minutes is None:
+        try:
+            start_dt = datetime.strptime(f"{open_task.date} {open_task.start_time}", "%Y-%m-%d %H:%M")
+            elapsed = datetime.now() - start_dt
+            total_minutes = int(elapsed.total_seconds() // 60)
+        except Exception:
+            total_minutes = 0
+
+    total_minutes = max(total_minutes, 0)
+    horas, mins = divmod(total_minutes, 60)
 
     return {
         "name": open_task.name,
         "url": open_task.url,
         "date": open_task.date,
-        "start_time": open_task.start_time,
+        "start_time": first_start,
+        "slot_start_time": open_task.start_time,
         "hours": horas,
         "minutes": mins,
+        "total_minutes": total_minutes,
         "file": open_task.file,
     }
 
@@ -191,7 +221,10 @@ def do_status() -> None:
 
     destino = f" ({info['url']})" if info["url"] else ""
     print(f"Abierto: {info['name']}{destino}")
-    print(f"Inicio: {info['date']} {info['start_time']}")
+    if info.get("slot_start_time") and info["slot_start_time"] != info["start_time"]:
+        print(f"Inicio: {info['date']} {info['start_time']} (último slot: {info['slot_start_time']})")
+    else:
+        print(f"Inicio: {info['date']} {info['start_time']}")
     print(f"Duración: {info['hours']}h {info['minutes']:02d}m")
     print(f"Fichero: {info['file']}")
 
