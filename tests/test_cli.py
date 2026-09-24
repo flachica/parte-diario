@@ -619,6 +619,44 @@ class TestCLI(unittest.TestCase):
         self.assertIn(f"último slot: {now_str}", out)
         self.assertIn("Duración:", out)
 
+    def test_status_refresher_disabled_without_clear_or_small_terminal(self):
+        from parte_diario import interactive
+        refresher = interactive.StatusRefresher(check_interval=0.05)
+        # Por defecto en tests sys.stdout no es tty -> _can_clear() es False
+        refresher.start("Status inicial", total_lines=20, clear_used=True)
+        self.assertFalse(refresher._can_update)
+        self.assertIsNone(refresher._thread)
+        refresher.stop()
+
+    def test_status_refresher_updates_ansi_on_change(self):
+        from parte_diario import interactive
+        import os
+        import time
+
+        refresher = interactive.StatusRefresher(check_interval=0.01)
+        writes = []
+
+        with patch("parte_diario.interactive._can_clear", return_value=True), \
+             patch("shutil.get_terminal_size", return_value=os.terminal_size((80, 25))), \
+             patch("sys.stdout.write", side_effect=writes.append), \
+             patch("sys.stdout.flush"):
+
+            refresher.start("Status anterior", total_lines=20, clear_used=True)
+            self.assertTrue(refresher._can_update)
+            self.assertIsNotNone(refresher._thread)
+
+            # Simular cambio en format_status_line
+            with patch("parte_diario.interactive.format_status_line", return_value="Status NUEVO"):
+                time.sleep(0.05)
+
+            refresher.stop()
+
+        self.assertIsNone(refresher._thread)
+        # Comprobar que escribió la secuencia ANSI esperada
+        combined_output = "".join(writes)
+        self.assertIn("\0337\033[5;1H Estado: Status NUEVO\033[K\0338", combined_output)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import sys
+import threading
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
@@ -230,14 +231,76 @@ def format_help() -> str:
         f"  {bold('edit')} (o 7)          Edita entradas interactivamente (o -e para abrir $EDITOR)",
         f"  {bold('review')} (o 8)        Repasa el parte del día paso a paso (o con --todo)",
         f"  {bold('config')} (o 9)        Muestra o fija la ruta del vault",
-        f"  {bold('[Enter]')}             Refresca la pantalla y actualiza el tiempo transcurrido",
+        f"  {bold('[Enter]')}             Refresca la pantalla (el tiempo se actualiza automáticamente)",
         f"  {bold('clear / cls')}         Limpia la sección de resultados",
         f"  {bold('0 / q / exit')}        Salir de la aplicación",
     ]
     return "\n".join(lines)
 
 
-def print_dashboard(result_content: Optional[str] = None, clear: bool = True) -> None:
+class StatusRefresher:
+    """Hilo en segundo plano para actualizar la línea de estado in-situ sin parpadeos."""
+
+    def __init__(self, check_interval: float = 3.0):
+        self.check_interval = check_interval
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._last_status: Optional[str] = None
+        self._total_lines: int = 24
+        self._can_update: bool = False
+
+    def start(self, current_status: str, total_lines: int, clear_used: bool = True) -> None:
+        self.stop()
+        self._last_status = current_status
+        self._total_lines = total_lines
+
+        term_size = shutil.get_terminal_size((80, 24))
+        self._can_update = (
+            clear_used
+            and _can_clear()
+            and term_size.columns >= 70
+            and term_size.lines >= total_lines
+        )
+        if not self._can_update:
+            return
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._worker, daemon=True, name="status-refresher")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.15)
+        self._thread = None
+
+    def _worker(self) -> None:
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(timeout=self.check_interval):
+                break
+            if not self._can_update:
+                continue
+
+            term_size = shutil.get_terminal_size((80, 24))
+            if term_size.columns < 70 or term_size.lines < self._total_lines:
+                continue
+
+            try:
+                new_status = format_status_line()
+                if new_status != self._last_status:
+                    self._last_status = new_status
+                    # Secuencia ANSI atómica:
+                    # \0337 : DEC guarda posición de cursor
+                    # \033[5;1H : Salta a la fila 5, columna 1
+                    # \033[K : Limpia hasta el final de la fila
+                    # \0338 : DEC restaura posición de cursor
+                    sys.stdout.write(f"\0337\033[5;1H Estado: {new_status}\033[K\0338")
+                    sys.stdout.flush()
+            except Exception:
+                pass
+
+
+def print_dashboard(result_content: Optional[str] = None, clear: bool = True) -> Tuple[str, int]:
     if clear:
         clear_screen()
 
@@ -265,12 +328,18 @@ def print_dashboard(result_content: Optional[str] = None, clear: bool = True) ->
     label = " RESULTADOS / ACTIVIDAD "
     dash_len = max(0, width - len(label) - 4)
     print(cyan(f"───{label}{'─' * dash_len}"))
+    res_lines = 0
     if result_content:
         for line in result_content.splitlines():
             print(f" {line}")
+            res_lines += 1
     else:
         print(dim(" Selecciona una opción [1-9] o escribe un comando (Enter para refrescar)."))
+        res_lines = 1
     print(cyan("─" * width))
+
+    total_lines = 14 + 1 + res_lines + 1 + 1
+    return status_line, total_lines
 
 
 def print_banner() -> None:
@@ -977,11 +1046,14 @@ def run_interactive() -> None:
         readline.set_history_length(1000)
 
     last_result: Optional[str] = None
+    refresher = StatusRefresher(check_interval=3.0)
 
     try:
         while True:
             try:
-                print_dashboard(result_content=last_result, clear=True)
+                status_text, total_lines = print_dashboard(result_content=last_result, clear=True)
+                refresher.start(status_text, total_lines, clear_used=True)
+
                 if HAVE_READLINE and sys.stdin.isatty():
                     configure_readline()
                     readline.set_completer(InteractiveCompleter(COMMANDS).complete)
@@ -993,6 +1065,8 @@ def run_interactive() -> None:
             except EOFError:
                 print("\n¡Hasta luego!")
                 break
+            finally:
+                refresher.stop()
 
             if not line:
                 last_result = f"Dashboard actualizado a las {datetime.now().strftime('%H:%M:%S')}."
@@ -1066,6 +1140,7 @@ def run_interactive() -> None:
                     last_result = yellow(f"Opción no reconocida: '{line}'. Escribe un número [1-9], un comando, o '?' para ver el menú.")
 
     finally:
+        refresher.stop()
         if HAVE_READLINE:
             try:
                 hist_file.parent.mkdir(parents=True, exist_ok=True)
