@@ -43,6 +43,78 @@ class TestDiary(unittest.TestCase):
         self.assertEqual(info[0], ("Parte", None))
         self.assertEqual(info[1], ("CTA", "https://ejemplo.com/123"))
 
+    def test_get_blocks_info_ignores_markdown_notes_and_headings(self):
+        content = [
+            "Correo",
+            "08:00 - 08:15",
+            "",
+            "CICD",
+            "08:41 - ",
+            "",
+            "Estamos rediseñando la integración continua.",
+            "",
+            "## Qué cambia",
+            "",
+            "- Al abrir un MR contra una rama protegida se actualiza sola.",
+            "- La imagen final ya no se publica durante el MR.",
+            "",
+            "### 1. Decisión — ¿fusión automática?",
+            "",
+            "> Cita o referencia importante",
+            "",
+            "```bash",
+            "docker run test",
+            "```",
+            "",
+            "---",
+            "",
+            "Otra Tarea",
+            "+15",
+        ]
+        info = diary.get_blocks_info(content)
+        # Solo deben salir 'Correo', 'CICD' y 'Otra Tarea'
+        self.assertEqual(len(info), 3)
+        self.assertEqual(info[0], ("Correo", None))
+        self.assertEqual(info[1], ("CICD", None))
+        self.assertEqual(info[2], ("Otra Tarea", None))
+
+    def test_is_task_block(self):
+        # Tarea válida con rango cerrado
+        b1 = diary.Block(0, 2, ["Tarea 1", "08:00 - 09:00"])
+        self.assertTrue(diary.is_task_block(b1))
+
+        # Tarea válida con rango abierto
+        b2 = diary.Block(0, 2, ["[Tarea 2](https://ejemplo.com)", "09:00 - "])
+        self.assertTrue(diary.is_task_block(b2))
+
+        # Tarea válida con ajuste de minutos
+        b3 = diary.Block(0, 2, ["Tarea 3", "+15"])
+        self.assertTrue(diary.is_task_block(b3))
+        b3_neg = diary.Block(0, 2, ["Tarea 3", "-20"])
+        self.assertTrue(diary.is_task_block(b3_neg))
+
+        # Nota suelta con viñetas
+        b4 = diary.Block(0, 2, ["* Nota suelta", "* Segunda línea"])
+        self.assertFalse(diary.is_task_block(b4))
+
+        # Encabezado markdown
+        b5 = diary.Block(0, 1, ["## Qué cambia"])
+        self.assertFalse(diary.is_task_block(b5))
+        b5_h3 = diary.Block(0, 2, ["### Decisión", "Detalles sin tiempo"])
+        self.assertFalse(diary.is_task_block(b5_h3))
+
+        # Párrafo de texto sin tiempo
+        b6 = diary.Block(0, 1, ["Estamos rediseñando la integración."])
+        self.assertFalse(diary.is_task_block(b6))
+
+        # Cita markdown
+        b7 = diary.Block(0, 1, ["> Nota citada"])
+        self.assertFalse(diary.is_task_block(b7))
+
+        # Bloque vacío o de 1 sola línea
+        b8 = diary.Block(0, 1, ["Solo Nombre"])
+        self.assertFalse(diary.is_task_block(b8))
+
     def test_close_open_line(self):
         content = [
             "Biomag",

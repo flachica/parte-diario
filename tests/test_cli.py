@@ -585,7 +585,9 @@ class TestCLI(unittest.TestCase):
                 "11:20 - 11:52",  # 32 min
             ],
         )
-        now_str = datetime.now().strftime("%H:%M")
+        now_dt = datetime.now()
+        # Evitamos colisión si el test se ejecuta exactamente a las 08:45
+        now_str = "12:00" if now_dt.strftime("%H:%M") == "08:45" else now_dt.strftime("%H:%M")
         # Re-iniciamos la tarea a la hora actual (para que el tramo abierto empiece con 0m de ese slot)
         cli.main(["start", "Espartero", "--hora", now_str])
 
@@ -618,6 +620,43 @@ class TestCLI(unittest.TestCase):
         self.assertIn("08:45", out)
         self.assertIn(f"último slot: {now_str}", out)
         self.assertIn("Duración:", out)
+
+    def test_interactive_start_filters_markdown_notes(self):
+        from parte_diario import interactive
+        today_file = cli._today_file(self.vault_dir)
+        diary.write_lines(
+            today_file,
+            [
+                "Correo",
+                "08:00 - 08:15",
+                "",
+                "Daily",
+                "08:15 - 08:35",
+                "",
+                "Apoyo Rialmar",
+                "08:35 - 08:41",
+                "",
+                "CICD",
+                "08:41 - ",
+                "",
+                "Estamos rediseñando la integración continua.",
+                "",
+                "## Qué cambia",
+                "",
+                "- Al abrir un MR contra una rama protegida.",
+                "- La imagen final ya no se publica.",
+                "",
+                "## Dos puntos a decidir",
+                "",
+                "### 1. Decisión — ¿fusión automática?",
+                "",
+                "Protegéis ramas protegidas.",
+            ],
+        )
+        tasks = interactive.get_today_tasks()
+        self.assertEqual(len(tasks), 4)
+        self.assertEqual([t[0] for t in tasks], ["Correo", "Daily", "Apoyo Rialmar", "CICD"])
+
 
     def test_status_refresher_disabled_without_clear_or_small_terminal(self):
         from parte_diario import interactive

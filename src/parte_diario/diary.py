@@ -26,6 +26,8 @@ from typing import List, Optional
 
 HEADER_LINK_RE = re.compile(r"^\[(?P<name>.+?)\]\((?P<url>.+?)\)\s*$")
 OPEN_LINE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*$")
+CLOSED_LINE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})$")
+ADJUSTMENT_RE = re.compile(r"^([+-])(\d+)(?:\s.*)?$")
 
 
 @dataclass
@@ -70,6 +72,34 @@ def write_lines(path: Path, lines: List[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def parse_time_range(line: str) -> Optional[tuple[str, Optional[str]]]:
+    """Si la línea es un rango horario (abierto o cerrado), devuelve (inicio, fin_o_None)."""
+    s = line.strip()
+    m_closed = CLOSED_LINE_RE.match(s)
+    if m_closed:
+        return m_closed.group("start"), m_closed.group("end")
+    m_open = OPEN_LINE_RE.match(s)
+    if m_open:
+        return m_open.group("start"), None
+    return None
+
+
+def is_task_block(block: Block) -> bool:
+    """Determina si un bloque corresponde a una tarea registrada y no a una nota o texto suelto."""
+    if len(block.lines) < 2:
+        return False
+    name = block.name.strip()
+    if not name or name.startswith(("*", "-", "+", "#", ">", "|", "`", "~", "=")):
+        return False
+    # Para ser una tarea debe tener al menos una entrada de tiempo (rango horario o ajuste)
+    for line in block.lines[1:]:
+        if parse_time_range(line):
+            return True
+        if ADJUSTMENT_RE.match(line.strip()):
+            return True
+    return False
+
+
 def find_blocks(lines: List[str]) -> List[Block]:
     blocks: List[Block] = []
     i = 0
@@ -88,7 +118,10 @@ def find_blocks(lines: List[str]) -> List[Block]:
 def find_block_by_name(lines: List[str], name: str) -> Optional[Block]:
     target = name.strip().lower()
     matches = [b for b in find_blocks(lines) if b.name.strip().lower() == target]
-    return matches[-1] if matches else None
+    if not matches:
+        return None
+    task_matches = [b for b in matches if is_task_block(b)]
+    return task_matches[-1] if task_matches else matches[-1]
 
 
 def get_blocks_info(lines: List[str]) -> List[tuple[str, Optional[str]]]:
@@ -97,9 +130,9 @@ def get_blocks_info(lines: List[str]) -> List[tuple[str, Optional[str]]]:
     res: List[tuple[str, Optional[str]]] = []
     seen = set()
     for b in find_blocks(lines):
-        name = b.name.strip()
-        if not name or name.startswith(("*", "-", "+")):
+        if not is_task_block(b):
             continue
+        name = b.name.strip()
         if name.lower() in seen:
             continue
         seen.add(name.lower())
@@ -107,6 +140,7 @@ def get_blocks_info(lines: List[str]) -> List[tuple[str, Optional[str]]]:
         url = match.group("url").strip() if match else None
         res.append((name, url))
     return res
+
 
 
 
@@ -188,6 +222,8 @@ def find_open_task_in_lines(lines: List[str]) -> Optional[tuple[str, str]]:
     Devuelve (nombre_tarea, start_time) de la última tarea abierta encontrada, o None."""
     blocks = find_blocks(lines)
     for b in reversed(blocks):
+        if not is_task_block(b):
+            continue
         for line in reversed(b.lines[1:]):  # Ignoramos la cabecera
             m = OPEN_LINE_RE.match(line.strip())
             if m:
@@ -205,6 +241,8 @@ def find_first_start_time_for_task(
     target_url = url.strip() if url else None
 
     for b in find_blocks(lines):
+        if not is_task_block(b):
+            continue
         match_name = b.name.strip().lower() == target_name
         match_url = bool(target_url and b.url and b.url == target_url)
         if match_name or match_url:
@@ -246,10 +284,6 @@ def append_free_block(lines: List[str], text_lines: List[str]) -> List[str]:
     return new_lines
 
 
-CLOSED_LINE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})$")
-ADJUSTMENT_RE = re.compile(r"^([+-])\s*(\d+)(?:\s.*)?$")
-
-
 @dataclass
 class TaskReviewItem:
     name: str
@@ -287,18 +321,16 @@ def get_tasks_summary(
     items: List[TaskReviewItem] = []
 
     for b in blocks:
-        name = b.name.strip()
-        if not name or name.startswith(("*", "-", "+", "#", ">")):
+        if not is_task_block(b):
             continue
 
+        name = b.name.strip()
         block_mins = 0
-        has_time_entry = False
         block_is_open = False
 
         for line in b.lines[1:]:
             tr = parse_time_range(line)
             if tr:
-                has_time_entry = True
                 s_str, e_str = tr
                 if e_str:
                     block_mins += minutes_between(s_str, e_str)
@@ -309,12 +341,9 @@ def get_tasks_summary(
             else:
                 adj = ADJUSTMENT_RE.match(line.strip())
                 if adj:
-                    has_time_entry = True
                     sign = -1 if adj.group(1) == "-" else 1
                     block_mins += sign * int(adj.group(2))
 
-        if not has_time_entry:
-            continue
 
         match: Optional[TaskReviewItem] = None
         if b.url:
@@ -369,6 +398,8 @@ def get_task_total_minutes(
     found_open_in_file: Optional[str] = None
 
     for b in find_blocks(lines):
+        if not is_task_block(b):
+            continue
         match_name = b.name.strip().lower() == target_name
         match_url = bool(target_url and b.url and b.url == target_url)
         if not (match_name or match_url):
@@ -401,18 +432,6 @@ def get_task_total_minutes(
     return total_mins
 
 
-def parse_time_range(line: str) -> Optional[tuple[str, Optional[str]]]:
-    """Si la línea es un rango horario (abierto o cerrado), devuelve (inicio, fin_o_None)."""
-    s = line.strip()
-    m_closed = CLOSED_LINE_RE.match(s)
-    if m_closed:
-        return m_closed.group("start"), m_closed.group("end")
-    m_open = OPEN_LINE_RE.match(s)
-    if m_open:
-        return m_open.group("start"), None
-    return None
-
-
 def format_time_range(start: str, end: Optional[str]) -> str:
     """Formatea un rango de tiempo 'HH:MM - HH:MM' o 'HH:MM - ' asegurando dos dígitos."""
     s_parts = start.split(":")
@@ -427,21 +446,25 @@ def format_time_range(start: str, end: Optional[str]) -> str:
 def find_highest_time_in_lines(lines: List[str]) -> Optional[str]:
     """Busca y devuelve la hora más alta registrada en los rangos horarios del fichero (formato HH:MM)."""
     times: List[tuple[int, int, str]] = []
-    for line in lines:
-        tr = parse_time_range(line)
-        if tr:
-            start_str, end_str = tr
-            s_parts = start_str.split(":")
-            times.append((int(s_parts[0]), int(s_parts[1]), f"{int(s_parts[0]):02d}:{int(s_parts[1]):02d}"))
-            if end_str:
-                e_parts = end_str.split(":")
-                times.append((int(e_parts[0]), int(e_parts[1]), f"{int(e_parts[0]):02d}:{int(e_parts[1]):02d}"))
+    for b in find_blocks(lines):
+        if not is_task_block(b):
+            continue
+        for line in b.lines[1:]:
+            tr = parse_time_range(line)
+            if tr:
+                start_str, end_str = tr
+                s_parts = start_str.split(":")
+                times.append((int(s_parts[0]), int(s_parts[1]), f"{int(s_parts[0]):02d}:{int(s_parts[1]):02d}"))
+                if end_str:
+                    e_parts = end_str.split(":")
+                    times.append((int(e_parts[0]), int(e_parts[1]), f"{int(e_parts[0]):02d}:{int(e_parts[1]):02d}"))
 
     if not times:
         return None
 
     times.sort(key=lambda t: (t[0], t[1]))
     return times[-1][2]
+
 
 
 def update_block_header(lines: List[str], block: Block, new_name: str, new_url: Optional[str]) -> List[str]:
