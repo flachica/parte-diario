@@ -115,9 +115,26 @@ def find_blocks(lines: List[str]) -> List[Block]:
     return blocks
 
 
+def _match_task_name(block_name: str, target_name: str) -> bool:
+    b_norm = block_name.strip().lower()
+    t_norm = target_name.strip().lower()
+    if b_norm == t_norm:
+        return True
+    if re.sub(r"\s*\(.*?\)\s*$", "", b_norm) == t_norm:
+        return True
+    if re.sub(r"\s*\(.*?\)\s*$", "", t_norm) == b_norm:
+        return True
+    return False
+
+
 def find_block_by_name(lines: List[str], name: str) -> Optional[Block]:
     target = name.strip().lower()
-    matches = [b for b in find_blocks(lines) if b.name.strip().lower() == target]
+    blocks = find_blocks(lines)
+    exact = [b for b in blocks if b.name.strip().lower() == target]
+    if exact:
+        task_matches = [b for b in exact if is_task_block(b)]
+        return task_matches[-1] if task_matches else exact[-1]
+    matches = [b for b in blocks if _match_task_name(b.name, target)]
     if not matches:
         return None
     task_matches = [b for b in matches if is_task_block(b)]
@@ -243,7 +260,7 @@ def find_first_start_time_for_task(
     for b in find_blocks(lines):
         if not is_task_block(b):
             continue
-        match_name = b.name.strip().lower() == target_name
+        match_name = _match_task_name(b.name, target_name)
         match_url = bool(target_url and b.url and b.url == target_url)
         if match_name or match_url:
             for line in b.lines[1:]:
@@ -396,15 +413,17 @@ def get_task_total_minutes(
 
     total_mins = 0
     found_open_in_file: Optional[str] = None
+    task_found = False
 
     for b in find_blocks(lines):
         if not is_task_block(b):
             continue
-        match_name = b.name.strip().lower() == target_name
+        match_name = _match_task_name(b.name, target_name)
         match_url = bool(target_url and b.url and b.url == target_url)
         if not (match_name or match_url):
             continue
 
+        task_found = True
         for line in b.lines[1:]:
             tr = parse_time_range(line)
             if tr:
@@ -419,7 +438,13 @@ def get_task_total_minutes(
                     sign = -1 if adj.group(1) == "-" else 1
                     total_mins += sign * int(adj.group(2))
 
-    active_start = open_slot_start or found_open_in_file
+    if found_open_in_file:
+        active_start = found_open_in_file
+    elif not task_found and open_slot_start:
+        active_start = open_slot_start
+    else:
+        active_start = None
+
     if active_start:
         try:
             start_dt = datetime.strptime(f"{target_date} {active_start}", "%Y-%m-%d %H:%M")

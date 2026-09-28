@@ -17,32 +17,72 @@ def _today_file(vault: Path, when: Optional[datetime] = None) -> Path:
     return vault / f"{when:%Y-%m-%d}.md"
 
 
+def sync_state_with_file(vault: Optional[Path] = None) -> Optional[state.OpenTask]:
+    """Sincroniza el estado del trabajo abierto con el fichero diario.
+
+    El fichero diario en el vault es la fuente de verdad. Si el usuario editó el
+    fichero a mano (cerró el trabajo, añadió un nuevo slot, lo renombró o abrió otro),
+    se actualiza o limpia estado.json para que coincida con la realidad.
+    """
+    v = vault or get_vault_path()
+    now = datetime.now()
+    today_file = _today_file(v, now)
+    open_task = state.load()
+
+    target_file = Path(open_task.file) if open_task else today_file
+    # Si la tarea guardada era de otro día pero hoy ya hay fichero con tarea abierta, manda hoy
+    if open_task and target_file != today_file and today_file.exists():
+        today_lines = diary.read_lines(today_file)
+        if diary.find_open_task_in_lines(today_lines):
+            target_file = today_file
+
+    if not target_file.exists():
+        if open_task:
+            state.clear()
+        return None
+
+    lines = diary.read_lines(target_file)
+    open_info = diary.find_open_task_in_lines(lines)
+
+    if open_info is None and target_file != today_file and today_file.exists():
+        today_lines = diary.read_lines(today_file)
+        today_open_info = diary.find_open_task_in_lines(today_lines)
+        if today_open_info is not None:
+            lines = today_lines
+            open_info = today_open_info
+            target_file = today_file
+
+    if open_info is None:
+        if open_task is not None:
+            state.clear()
+        return None
+
+    task_name, start_time = open_info
+    block = diary.find_block_by_name(lines, task_name)
+    url = block.url if block else (open_task.url if open_task and open_task.name == task_name else None)
+    first_start = diary.find_first_start_time_for_task(lines, task_name, url) or start_time
+
+    date_str = target_file.stem  # YYYY-MM-DD
+    synced_task = state.OpenTask(
+        name=task_name,
+        url=url,
+        file=str(target_file),
+        date=date_str,
+        start_time=start_time,
+        real_start_time=first_start,
+    )
+    if open_task != synced_task:
+        state.save(synced_task)
+    return synced_task
+
+
 def _close_current(end_time: Optional[str] = None, verbose: bool = True) -> Optional[dict]:
     """Cierra el trabajo actualmente abierto, si lo hay. No falla si no hay ninguno."""
-    open_task = state.load()
-    vault = get_vault_path()
+    open_task = sync_state_with_file()
     now = datetime.now()
     close_time = end_time or f"{now:%H:%M}"
 
     if open_task is None:
-        today_file = _today_file(vault, now)
-        if today_file.exists():
-            lines = diary.read_lines(today_file)
-            open_info = diary.find_open_task_in_lines(lines)
-            if open_info is not None:
-                task_name, start_time = open_info
-                new_lines = diary.close_open_line(lines, start_time, prefer_block_name=task_name, end_time=close_time)
-                if new_lines is not None:
-                    diary.write_lines(today_file, new_lines)
-                    state.clear()
-                    if verbose:
-                        print(f"Cerrado: {task_name} ({start_time} - {close_time})")
-                    return {
-                        "name": task_name,
-                        "url": None,
-                        "start_time": start_time,
-                        "end_time": close_time,
-                    }
         return None
 
     task_file = Path(open_task.file)
@@ -102,9 +142,10 @@ def do_start(
     diary.write_lines(today_file, new_lines)
 
     # Si no se pasó URL explícita pero el bloque ya tenía URL en el fichero, conservarla
-    if not url:
-        block = diary.find_block_by_name(new_lines, nombre)
-        if block:
+    block = diary.find_block_by_name(new_lines, nombre)
+    if block:
+        nombre = block.name
+        if not url:
             m = diary.HEADER_LINK_RE.match(block.header)
             if m:
                 url = m.group("url")
@@ -129,7 +170,7 @@ def do_start(
 
 
 def do_stop(verbose: bool = True) -> bool:
-    open_task = state.load()
+    open_task = sync_state_with_file()
     if open_task is None:
         if verbose:
             print("No hay ningún trabajo abierto.", file=sys.stderr)
@@ -139,33 +180,7 @@ def do_stop(verbose: bool = True) -> bool:
 
 
 def get_status_info() -> Optional[dict]:
-    open_task = state.load()
-    if open_task is None:
-        vault = get_vault_path()
-        today_file = _today_file(vault)
-        if today_file.exists():
-            lines = diary.read_lines(today_file)
-            open_info = diary.find_open_task_in_lines(lines)
-            if open_info is not None:
-                task_name, start_time = open_info
-                block = diary.find_block_by_name(lines, task_name)
-                url = None
-                if block:
-                    m = diary.HEADER_LINK_RE.match(block.header)
-                    if m:
-                        url = m.group("url")
-                now = datetime.now()
-                first_start = diary.find_first_start_time_for_task(lines, task_name, url) or start_time
-                open_task = state.OpenTask(
-                    name=task_name,
-                    url=url,
-                    file=str(today_file),
-                    date=f"{now:%Y-%m-%d}",
-                    start_time=start_time,
-                    real_start_time=first_start,
-                )
-                state.save(open_task)
-
+    open_task = sync_state_with_file()
     if open_task is None:
         return None
 
@@ -237,7 +252,7 @@ def do_note(texto: str, loose: bool = False, verbose: bool = True) -> bool:
             print("La nota no puede estar vacía.", file=sys.stderr)
         return False
 
-    open_task = None if loose else state.load()
+    open_task = None if loose else sync_state_with_file(vault)
 
     if open_task is not None:
         task_file = Path(open_task.file)
@@ -281,7 +296,7 @@ def do_log(nombre: str, minutos: int, resta: bool = False, url: Optional[str] = 
 
 def do_interrupt(nombre: str, minutos: int, url: Optional[str] = None, verbose: bool = True) -> bool:
     vault = get_vault_path()
-    open_task = state.load()
+    open_task = sync_state_with_file(vault)
     if open_task is None:
         if verbose:
             print("No hay ninguna tarea abierta a la que restar tiempo.", file=sys.stderr)

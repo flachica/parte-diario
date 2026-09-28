@@ -368,6 +368,50 @@ class TestDiary(unittest.TestCase):
         )
         self.assertEqual(total_later, 121 + 30)
 
+    def test_resumed_task_excludes_work_gaps(self):
+        # Escenario real: reunión de 10:52 a 11:45 (53 min), hueco sin trabajo, y reanudación a las 13:36
+        lines = [
+            "Reu Alondra (Comercial Eldisser)",
+            "10:52 - 11:45",
+            "13:36 - ",
+        ]
+        # A las 13:46 (10 min en el segundo tramo)
+        ref_time = datetime(2026, 9, 28, 13, 46)
+        total = diary.get_task_total_minutes(
+            lines,
+            "Reu Alondra (Comercial Eldisser)",
+            file_date="2026-09-28",
+            reference_time=ref_time,
+        )
+        # 53 min (10:52-11:45) + 10 min (13:36-13:46) = 63 min
+        # NO debe contar el hueco de 11:45 a 13:36 (~111 min)
+        self.assertEqual(total, 63)
+
+    def test_match_task_name_with_parenthesis(self):
+        lines = [
+            "Reu Alondra (Comercial Eldisser)",
+            "10:52 - 11:45",
+            "13:36 - ",
+        ]
+        # Buscar por "Reu Alondra" debe coincidir con "Reu Alondra (Comercial Eldisser)"
+        block = diary.find_block_by_name(lines, "Reu Alondra")
+        self.assertIsNotNone(block)
+        self.assertEqual(block.name, "Reu Alondra (Comercial Eldisser)")
+
+        # find_first_start_time_for_task
+        first_start = diary.find_first_start_time_for_task(lines, "Reu Alondra")
+        self.assertEqual(first_start, "10:52")
+
+        # get_task_total_minutes
+        ref_time = datetime(2026, 9, 28, 13, 46)
+        total = diary.get_task_total_minutes(
+            lines,
+            "Reu Alondra",
+            file_date="2026-09-28",
+            reference_time=ref_time,
+        )
+        self.assertEqual(total, 63)
+
 
 if __name__ == "__main__":
     unittest.main()

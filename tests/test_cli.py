@@ -695,6 +695,89 @@ class TestCLI(unittest.TestCase):
         combined_output = "".join(writes)
         self.assertIn("\0337\033[5;1H Estado: Status NUEVO\033[K\0338", combined_output)
 
+    def test_sync_state_with_file_when_edited_manually_with_gap(self):
+        # Escenario exacto del usuario:
+        # 1. Se inició 'Reu Alondra' a las 10:52
+        today_file = cli._today_file(self.vault_dir)
+        # En el fichero, el usuario editó a mano para cerrar a las 11:45,
+        # renombrar a 'Reu Alondra (Comercial Eldisser)' y reanudar a las 13:36.
+        diary.write_lines(
+            today_file,
+            [
+                "Reu Alondra (Comercial Eldisser)",
+                "10:52 - 11:45",
+                "13:36 - ",
+            ],
+        )
+        # Pero estado.json quedó desincronizado con los datos de las 10:52
+        state.save(
+            state.OpenTask(
+                name="Reu Alondra",
+                url=None,
+                file=str(today_file),
+                date=today_file.stem,
+                start_time="10:52",
+                real_start_time="10:52",
+            )
+        )
+
+        now_fixed = datetime(2026, 9, 28, 13, 46)
+        with patch("parte_diario.cli.datetime") as mock_dt, \
+             patch("parte_diario.diary.datetime") as mock_diary_dt:
+            mock_dt.now.return_value = now_fixed
+            mock_dt.strptime.side_effect = datetime.strptime
+            mock_diary_dt.now.return_value = now_fixed
+            mock_diary_dt.strptime.side_effect = datetime.strptime
+
+            info = cli.get_status_info()
+            self.assertIsNotNone(info)
+            self.assertEqual(info["name"], "Reu Alondra (Comercial Eldisser)")
+            self.assertEqual(info["start_time"], "10:52")
+            self.assertEqual(info["slot_start_time"], "13:36")
+            # 53 min (10:52-11:45) + 10 min (13:36-13:46) = 63 min (1h 03m)
+            # NO 2h 54m (el hueco de 11:45 a 13:36 no se cuenta)
+            self.assertEqual(info["total_minutes"], 63)
+            self.assertEqual(info["hours"], 1)
+            self.assertEqual(info["minutes"], 3)
+
+        # El fichero de estado también debe haberse actualizado
+        saved_task = state.load()
+        self.assertIsNotNone(saved_task)
+        self.assertEqual(saved_task.name, "Reu Alondra (Comercial Eldisser)")
+        self.assertEqual(saved_task.start_time, "13:36")
+        self.assertEqual(saved_task.real_start_time, "10:52")
+
+    def test_sync_state_with_file_clears_when_closed_manually(self):
+        today_file = cli._today_file(self.vault_dir)
+        diary.write_lines(today_file, ["Tarea Terminada", "08:00 - 09:00"])
+        state.save(
+            state.OpenTask(
+                name="Tarea Terminada",
+                url=None,
+                file=str(today_file),
+                date=today_file.stem,
+                start_time="08:00",
+            )
+        )
+        info = cli.get_status_info()
+        self.assertIsNone(info)
+        self.assertIsNone(state.load())
+
+    def test_sync_state_with_file_picks_up_manually_opened_task(self):
+        today_file = cli._today_file(self.vault_dir)
+        diary.write_lines(today_file, ["Tarea Escrita En Obsidian", "14:00 - "])
+        state.clear()
+        self.assertIsNone(state.load())
+
+        info = cli.get_status_info()
+        self.assertIsNotNone(info)
+        self.assertEqual(info["name"], "Tarea Escrita En Obsidian")
+        self.assertEqual(info["start_time"], "14:00")
+
+        saved = state.load()
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved.name, "Tarea Escrita En Obsidian")
+
 
 if __name__ == "__main__":
     unittest.main()

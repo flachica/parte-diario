@@ -28,6 +28,7 @@ from .cli import (
     do_stop,
     get_status_info,
     get_vault_path,
+    sync_state_with_file,
 )
 
 
@@ -443,7 +444,7 @@ def interactive_start() -> Optional[str]:
 
 
 def interactive_stop() -> Optional[str]:
-    open_task = state.load()
+    open_task = sync_state_with_file()
     if open_task is None:
         return yellow("No hay ningún trabajo abierto para parar.")
 
@@ -469,7 +470,7 @@ def interactive_stop() -> Optional[str]:
 
 
 def interactive_note() -> Optional[str]:
-    open_task = state.load()
+    open_task = sync_state_with_file()
     loose = False
 
     if open_task is not None:
@@ -500,7 +501,7 @@ def interactive_note() -> Optional[str]:
 
 
 def interactive_interrupt() -> Optional[str]:
-    open_task = state.load()
+    open_task = sync_state_with_file()
     if open_task is None:
         return yellow("No hay ninguna tarea abierta a la que restar tiempo.\nSugerencia: Usa la opción [5] (Anotar minutos sueltos) para registrar tiempo independiente.")
 
@@ -669,25 +670,7 @@ def _open_in_editor(path: Path) -> None:
 
 
 def _refresh_state_from_file(path: Path) -> None:
-    lines = diary.read_lines(path)
-    open_info = diary.find_open_task_in_lines(lines)
-    if open_info is not None:
-        task_name, start_time = open_info
-        block = diary.find_block_by_name(lines, task_name)
-        url = block.url if block else None
-        first_start = diary.find_first_start_time_for_task(lines, task_name, url) or start_time
-        state.save(
-            state.OpenTask(
-                name=task_name,
-                url=url,
-                file=str(path),
-                date=datetime.now().strftime("%Y-%m-%d"),
-                start_time=start_time,
-                real_start_time=first_start,
-            )
-        )
-    else:
-        state.clear()
+    sync_state_with_file(vault=path.parent)
 
 
 def _interactive_edit_block(path: Path, target_block_idx: int, is_today: bool) -> None:
