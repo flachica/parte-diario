@@ -440,8 +440,8 @@ class TestCLI(unittest.TestCase):
             "09:00 - 09:30\n",
             encoding="utf-8",
         )
-        # Inputs: 8 (menú review), fecha, Enter (siguiente tarea), 0 (salir)
-        inputs = ["8", "2026-09-22", "", "0"]
+        # Inputs: 8 (menú review), fecha, Enter (siguiente tarea), Enter (finalizar), 0 (salir)
+        inputs = ["8", "2026-09-22", "", "", "0"]
         f = io.StringIO()
         with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
             interactive.run_interactive()
@@ -460,7 +460,7 @@ class TestCLI(unittest.TestCase):
             "08:17 - 08:33\n",
             encoding="utf-8",
         )
-        inputs = [""]  # Enter para avanzar
+        inputs = ["", ""]  # Enter para avanzar, Enter para finalizar
         f = io.StringIO()
         with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
             cli.main(["review", "--fecha", "2026-09-22", "--iterativo"])
@@ -503,6 +503,43 @@ class TestCLI(unittest.TestCase):
         out = f.getvalue()
         self.assertIn("https://odoo.sdi.es/task/1: 10 minutos", out)
         self.assertIn("daily hermes: 16 minutos", out)
+
+    def test_interactive_review_suggests_yesterday(self):
+        from datetime import timedelta
+        from parte_diario import interactive
+        yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday_file = self.vault_dir / f"{yesterday_str}.md"
+        yesterday_file.write_text(
+            "tarea de ayer\n"
+            "08:00 - 09:00\n",
+            encoding="utf-8",
+        )
+        # Inputs: 8 (review), Enter (acepta sugerencia de ayer), Enter (finalizar), 0 (salir)
+        inputs = ["8", "", "", "0"]
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
+            interactive.run_interactive()
+        out = f.getvalue()
+        self.assertIn(f"Repaso del parte: {yesterday_str}", out)
+        self.assertIn("[1/1] tarea de ayer: 60 minutos (1h 00m)", out)
+        self.assertIn("Total: 60 minutos (1h 00m)", out)
+
+    def test_review_iterative_pauses_on_last_item(self):
+        file_path = self.vault_dir / "2026-09-22.md"
+        file_path.write_text(
+            "tarea unica\n"
+            "10:00 - 11:00\n",
+            encoding="utf-8",
+        )
+        # Con 1 sola tarea, debe pausar para finalizar
+        inputs = [""]  # Enter para finalizar
+        f = io.StringIO()
+        with patch("builtins.input", side_effect=inputs), redirect_stdout(f):
+            cli.main(["review", "--fecha", "2026-09-22", "--iterativo"])
+        out = f.getvalue()
+        self.assertIn("[1/1] tarea unica: 60 minutos (1h 00m)", out)
+        self.assertIn("Total: 60 minutos (1h 00m)", out)
+
     def test_interactive_dashboard_two_sections_and_help(self):
         from parte_diario import interactive
         inputs = iter(["?", "0"])
@@ -696,9 +733,10 @@ class TestCLI(unittest.TestCase):
         self.assertIn("\0337\033[5;1H Estado: Status NUEVO\033[K\0338", combined_output)
 
     def test_sync_state_with_file_when_edited_manually_with_gap(self):
+        now_fixed = datetime(2026, 9, 28, 13, 46)
         # Escenario exacto del usuario:
         # 1. Se inició 'Reu Alondra' a las 10:52
-        today_file = cli._today_file(self.vault_dir)
+        today_file = cli._today_file(self.vault_dir, now_fixed)
         # En el fichero, el usuario editó a mano para cerrar a las 11:45,
         # renombrar a 'Reu Alondra (Comercial Eldisser)' y reanudar a las 13:36.
         diary.write_lines(
@@ -721,7 +759,6 @@ class TestCLI(unittest.TestCase):
             )
         )
 
-        now_fixed = datetime(2026, 9, 28, 13, 46)
         with patch("parte_diario.cli.datetime") as mock_dt, \
              patch("parte_diario.diary.datetime") as mock_diary_dt:
             mock_dt.now.return_value = now_fixed

@@ -474,16 +474,43 @@ def do_review(
                                 print("Opción no válida. Pulsa [Enter] para mostrar el siguiente o [q] para salir.")
                         if stopped_early:
                             break
+                    else:
+                        total_h, total_rem = divmod(abs(total_minutes), 60)
+                        total_sign = "-" if total_minutes < 0 else ""
+                        total_dur = f" ({total_sign}{total_h}h {total_rem:02d}m)" if total_h > 0 else ""
+                        print(f"\nTotal: {total_minutes} minutos{total_dur}")
+
+                        prompt = "Finalizar [Enter] o salir [q]: "
+                        while True:
+                            try:
+                                ans = input(prompt).strip().lower()
+                            except (KeyboardInterrupt, EOFError):
+                                print("\nRepaso finalizado.")
+                                stopped_early = True
+                                break
+
+                            if ans in ("", "s", "si", "sí", "y", "yes", "sig", "siguiente", "f", "fin", "finalizar"):
+                                break
+                            elif ans in ("q", "quit", "exit", "salir", "c", "cancel", "cancelar"):
+                                stopped_early = True
+                                break
+                            else:
+                                print("Opción no válida. Pulsa [Enter] para finalizar o [q] para salir.")
+                        if stopped_early:
+                            break
                 else:
                     print(item_str)
 
-            total_h, total_rem = divmod(abs(total_minutes), 60)
-            total_sign = "-" if total_minutes < 0 else ""
-            total_dur = f" ({total_sign}{total_h}h {total_rem:02d}m)" if total_h > 0 else ""
-            if stopped_early:
-                print(f"\n(Repaso interrumpido. Total del día: {total_minutes} minutos{total_dur})")
-            else:
+            if not do_iterate:
+                total_h, total_rem = divmod(abs(total_minutes), 60)
+                total_sign = "-" if total_minutes < 0 else ""
+                total_dur = f" ({total_sign}{total_h}h {total_rem:02d}m)" if total_h > 0 else ""
                 print(f"\nTotal: {total_minutes} minutos{total_dur}")
+            elif stopped_early and idx < total_items:
+                total_h, total_rem = divmod(abs(total_minutes), 60)
+                total_sign = "-" if total_minutes < 0 else ""
+                total_dur = f" ({total_sign}{total_h}h {total_rem:02d}m)" if total_h > 0 else ""
+                print(f"\n(Repaso interrumpido. Total del día: {total_minutes} minutos{total_dur})")
 
     return {
         "date": fecha_str,

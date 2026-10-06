@@ -9,7 +9,7 @@ import shutil
 import sys
 import threading
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -616,16 +616,17 @@ def interactive_show() -> Optional[str]:
 
 
 def interactive_review() -> Optional[str]:
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    yesterday = datetime.now() - timedelta(days=1)
+    yesterday_str = yesterday.strftime("%Y-%m-%d")
     try:
-        fecha = input(f"Fecha a repasar [YYYY-MM-DD] (Enter para hoy: {today_str}, c para cancelar): ").strip()
+        fecha = input(f"Fecha a repasar [YYYY-MM-DD] (Enter para ayer: {yesterday_str}, c para cancelar): ").strip()
     except (KeyboardInterrupt, EOFError):
         return "Operación cancelada."
 
     if fecha.lower() in ("c", "cancel", "cancelar"):
         return "Operación cancelada."
 
-    fecha_consultar = fecha if fecha else today_str
+    fecha_consultar = fecha if fecha else yesterday_str
     try:
         when = datetime.strptime(fecha_consultar, "%Y-%m-%d")
     except ValueError:
@@ -638,8 +639,10 @@ def interactive_review() -> Optional[str]:
 
     header = f"--- Repaso del parte: {fecha_consultar} ({path.name}) ---"
     print("\n" + bold(header))
-    do_review(fecha=fecha_consultar, iterative=True)
+    res = do_review(fecha=fecha_consultar, iterative=True)
     print(bold("-" * len(header)) + "\n")
+    if res and not res.get("tasks"):
+        return yellow(f"No hay tareas registradas para el {fecha_consultar}.")
     return f"✓ Repaso del parte finalizado ({fecha_consultar})."
 
 
