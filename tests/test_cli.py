@@ -722,7 +722,8 @@ class TestCLI(unittest.TestCase):
             self.assertIsNotNone(refresher._thread)
 
             # Simular cambio en format_status_line
-            with patch("parte_diario.interactive.format_status_line", return_value="Status NUEVO"):
+            with patch("parte_diario.interactive.format_status_line", return_value="Status NUEVO"), \
+                 patch("parte_diario.interactive.format_time_line", return_value="1h 05m"):
                 time.sleep(0.05)
 
             refresher.stop()
@@ -730,7 +731,10 @@ class TestCLI(unittest.TestCase):
         self.assertIsNone(refresher._thread)
         # Comprobar que escribió la secuencia ANSI esperada
         combined_output = "".join(writes)
-        self.assertIn("\0337\033[5;1H Estado: Status NUEVO\033[K\0338", combined_output)
+        self.assertIn(
+            "\0337\033[5;1H Estado: Status NUEVO\033[K\033[6;1H Tiempo: 1h 05m\033[K\0338",
+            combined_output,
+        )
 
     def test_sync_state_with_file_when_edited_manually_with_gap(self):
         now_fixed = datetime(2026, 9, 28, 13, 46)

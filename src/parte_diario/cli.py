@@ -234,8 +234,7 @@ def do_status() -> None:
         print("No hay ningún trabajo abierto.")
         return
 
-    destino = f" ({info['url']})" if info["url"] else ""
-    print(f"Abierto: {info['name']}{destino}")
+    print(f"Abierto: {info['name']}")
     if info.get("slot_start_time") and info["slot_start_time"] != info["start_time"]:
         print(f"Inicio: {info['date']} {info['start_time']} (último slot: {info['slot_start_time']})")
     else:
@@ -385,13 +384,18 @@ def format_review_item(
     color: Optional[bool] = None,
     show_names: bool = False,
 ) -> str:
-    """Formatea una tarea para el repaso: URL navegable si la tiene, o nombre si no."""
+    """Formatea una tarea para el repaso: muestra el nombre, con URL navegable si la tiene."""
     use_color = _can_color() if color is None else color
     if item.url:
-        target = format_navigable_url(item.url, color=use_color)
+        display_name = item.name if item.name else item.url
+        target = format_navigable_url(item.url, text=display_name, color=use_color)
         if show_names and item.name and item.name != item.url:
             name_part = f"\033[90m({item.name})\033[0m" if use_color else f"({item.name})"
-            target = f"{target} {name_part}"
+            # Evitamos duplicar el nombre si ya lo mostramos
+            if display_name == item.name:
+                pass
+            else:
+                target = f"{target} {name_part}"
     else:
         target = f"\033[1m{item.name}\033[0m" if use_color else item.name
 

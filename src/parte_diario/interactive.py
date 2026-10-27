@@ -214,8 +214,22 @@ def format_status_line() -> str:
     hours = info["hours"]
     mins = info["minutes"]
     dur = f"{hours}h {mins:02d}m" if hours > 0 else f"{mins}m"
-    url_part = f" {dim('(' + info['url'] + ')')}" if info["url"] else ""
-    return f"{green('●')} {bold(info['name'])}{url_part} {dim('·')} desde {info['start_time']} ({dur})"
+    return f"{green('●')} {bold(info['name'])} {dim('·')} desde {info['start_time']} ({dur})"
+
+
+def format_time_line() -> str:
+    """Tiempo total registrado hoy; si hay tarea abierta incluye hasta el momento actual."""
+    today_file = _today_file(get_vault_path())
+    total = 0
+    if today_file.exists():
+        try:
+            items = diary.get_tasks_summary(diary.read_lines(today_file))
+            total = max(sum(i.minutes for i in items), 0)
+        except Exception:
+            total = 0
+    hours, mins = divmod(total, 60)
+    dur = f"{hours}h {mins:02d}m" if hours > 0 else f"{mins}m"
+    return bold(dur)
 
 
 def format_help() -> str:
@@ -247,12 +261,14 @@ class StatusRefresher:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_status: Optional[str] = None
+        self._last_time: Optional[str] = None
         self._total_lines: int = 24
         self._can_update: bool = False
 
-    def start(self, current_status: str, total_lines: int, clear_used: bool = True) -> None:
+    def start(self, current_status: str, total_lines: int, clear_used: bool = True, current_time: Optional[str] = None) -> None:
         self.stop()
         self._last_status = current_status
+        self._last_time = current_time
         self._total_lines = total_lines
 
         term_size = shutil.get_terminal_size((80, 24))
@@ -288,25 +304,31 @@ class StatusRefresher:
 
             try:
                 new_status = format_status_line()
-                if new_status != self._last_status:
+                new_time = format_time_line()
+                if new_status != self._last_status or new_time != self._last_time:
                     self._last_status = new_status
+                    self._last_time = new_time
                     # Secuencia ANSI atómica:
                     # \0337 : DEC guarda posición de cursor
                     # \033[5;1H : Salta a la fila 5, columna 1
                     # \033[K : Limpia hasta el final de la fila
                     # \0338 : DEC restaura posición de cursor
-                    sys.stdout.write(f"\0337\033[5;1H Estado: {new_status}\033[K\0338")
+                    sys.stdout.write(
+                        f"\0337\033[5;1H Estado: {new_status}\033[K"
+                        f"\033[6;1H Tiempo: {new_time}\033[K\0338"
+                    )
                     sys.stdout.flush()
             except Exception:
                 pass
 
 
-def print_dashboard(result_content: Optional[str] = None, clear: bool = True) -> Tuple[str, int]:
+def print_dashboard(result_content: Optional[str] = None, clear: bool = True) -> Tuple[str, int, str]:
     if clear:
         clear_screen()
 
     vault = get_vault_path()
     status_line = format_status_line()
+    time_line = format_time_line()
     width = 70
 
     # SECCIÓN 1: OPERACIONES Y ESTADO
@@ -315,6 +337,7 @@ def print_dashboard(result_content: Optional[str] = None, clear: bool = True) ->
     print("=" * width)
     print(f" Vault:  {dim(str(vault))}")
     print(f" Estado: {status_line}")
+    print(f" Tiempo: {time_line}")
     print("-" * width)
     print(f" {bold('[1]')} Iniciar / reanudar tarea       {bold('[6]')} Ver diario de hoy / fecha")
     print(f" {bold('[2]')} Parar tarea abierta (stop)     {bold('[7]')} Editar entradas (edit)")
@@ -339,8 +362,8 @@ def print_dashboard(result_content: Optional[str] = None, clear: bool = True) ->
         res_lines = 1
     print(cyan("─" * width))
 
-    total_lines = 14 + 1 + res_lines + 1 + 1
-    return status_line, total_lines
+    total_lines = 15 + 1 + res_lines + 1 + 1
+    return status_line, total_lines, time_line
 
 
 def print_banner() -> None:
@@ -350,6 +373,7 @@ def print_banner() -> None:
 def print_status_bar() -> None:
     print("-" * 70)
     print(f" Estado: {format_status_line()}")
+    print(f" Tiempo: {format_time_line()}")
     print(dim(" Opciones: [1] Iniciar  [2] Parar  [3] Nota  [4] Interrumpir  [5] Minutos  [6] Ver  [7] Editar  [8] Repasar  [9] Config  [0] Salir"))
 
 
@@ -1037,8 +1061,8 @@ def run_interactive() -> None:
     try:
         while True:
             try:
-                status_text, total_lines = print_dashboard(result_content=last_result, clear=True)
-                refresher.start(status_text, total_lines, clear_used=True)
+                status_text, total_lines, time_text = print_dashboard(result_content=last_result, clear=True)
+                refresher.start(status_text, total_lines, clear_used=True, current_time=time_text)
 
                 if HAVE_READLINE and sys.stdin.isatty():
                     configure_readline()
